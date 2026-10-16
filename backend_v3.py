@@ -218,23 +218,39 @@ def analizar_lote(geom: ee.Geometry, num_ambientes: int = 4, anio: int = 2024) -
     region_bounds = geom.bounds()
 
     # ── Sentinel-2 SR Harmonized ──────────────────────────────────────────────
-    s2 = (ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
-          .filterBounds(geom)
-          .map(enmascarar_nubes))
+    # Colección sin enmascarar para contar imágenes disponibles
+    s2_raw = (ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+              .filterBounds(geom)
+              .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 30)))
+    s2 = s2_raw.map(enmascarar_nubes)
 
-    # Verano: diciembre año anterior – febrero año referencia
-    s2_ver = (s2.filter(ee.Filter.calendarRange(anio - 1, anio, 'year'))
-                .filter(ee.Filter.calendarRange(12, 12, 'month'))
-                .merge(
-                    s2.filter(ee.Filter.calendarRange(anio, anio, 'year'))
-                      .filter(ee.Filter.calendarRange(1, 2, 'month'))
-                ))
-    img_ver = s2_ver.median().clip(geom)
+    def get_best_seasonal(s2_col, target_anio, months_start, months_end, fallback_years=3):
+        """Devuelve la mejor imagen estacional, con fallback a años anteriores si no hay datos."""
+        for offset in range(fallback_years + 1):
+            yr = target_anio - offset
+            if months_start <= months_end:
+                col = (s2_col.filter(ee.Filter.calendarRange(yr, yr, 'year'))
+                             .filter(ee.Filter.calendarRange(months_start, months_end, 'month')))
+            else:
+                # Rango que cruza año (ej: dic-feb)
+                col = (s2_col.filter(ee.Filter.calendarRange(yr - 1, yr, 'year'))
+                             .filter(ee.Filter.calendarRange(months_start, 12, 'month'))
+                       .merge(
+                           s2_col.filter(ee.Filter.calendarRange(yr, yr, 'year'))
+                                 .filter(ee.Filter.calendarRange(1, months_end, 'month'))
+                       ))
+            count = col.size().getInfo()
+            if count > 0:
+                return col.median().clip(geom), yr
+        # Si todo falla, usar los últimos 5 años sin filtro estacional
+        col_all = s2_col.filter(ee.Filter.calendarRange(target_anio - 4, target_anio, 'year'))
+        return col_all.median().clip(geom), target_anio
 
-    # Invierno: junio–agosto año referencia
-    s2_inv = (s2.filter(ee.Filter.calendarRange(anio, anio, 'year'))
-                .filter(ee.Filter.calendarRange(6, 8, 'month')))
-    img_inv = s2_inv.median().clip(geom)
+    # Verano: diciembre–febrero (cruce de año)
+    img_ver, anio_ver_real = get_best_seasonal(s2, anio, 12, 2)
+
+    # Invierno: junio–agosto
+    img_inv, anio_inv_real = get_best_seasonal(s2, anio, 6, 8)
 
     # ── NDVI multi-año (anio-5 → anio) ────────────────────────────────────────
     anio_ini = anio - 5
@@ -392,7 +408,7 @@ def analizar_lote(geom: ee.Geometry, num_ambientes: int = 4, anio: int = 2024) -
     suelos.sort(key=lambda x: x['hectareas'], reverse=True)
 
     return {
-        'superficie':   round(superficie, 1),
+        'superficie':    round(superficie, 1),
         'ndvi_promedio': round(float(ndvi_stat or 0), 3),
         'url_verano':    url_ver,
         'url_invierno':  url_inv,
@@ -400,8 +416,10 @@ def analizar_lote(geom: ee.Geometry, num_ambientes: int = 4, anio: int = 2024) -
         'url_ambientes': url_amb,
         'url_suelos':    url_sue,
         'url_topografia': url_top,
-        'ambientes': ambientes,
-        'suelos':    suelos,
+        'ambientes':     ambientes,
+        'suelos':        suelos,
+        'anio_verano':   anio_ver_real,
+        'anio_invierno': anio_inv_real,
     }
 
 
