@@ -303,11 +303,22 @@ def analizar_lote(geom: ee.Geometry, num_ambientes: int = 4, anio: int = 2024) -
 
     # ── Suelos INTA ───────────────────────────────────────────────────────────
     # Detectar provincia por centroide
-    centroid   = geom.centroid(maxError=1)
-    gaul       = ee.FeatureCollection('FAO/GAUL/2015/level1')
-    prov_feat  = gaul.filterBounds(centroid).first()
-    prov_name  = prov_feat.get('ADM1_NAME').getInfo() if prov_feat else ''
-    prov_lower = (prov_name or '').lower()
+    centroid = geom.centroid(maxError=1)
+    prov_lower = ''
+    try:
+        gaul = ee.FeatureCollection('FAO/GAUL/2025/level1')
+        prov_feat = gaul.filterBounds(centroid).first()
+        prov_name = prov_feat.get('ADM1_NAME').getInfo()
+        prov_lower = (prov_name or '').lower()
+    except Exception:
+        try:
+            # Fallback a versión 2015 si la 2025 falla
+            gaul = ee.FeatureCollection('FAO/GAUL/2015/level1')
+            prov_feat = gaul.filterBounds(centroid).first()
+            prov_name = prov_feat.get('ADM1_NAME').getInfo()
+            prov_lower = (prov_name or '').lower()
+        except Exception:
+            prov_lower = ''  # default → Buenos Aires
 
     suelos_fc = None
     if 'córdoba' in prov_lower or 'cordoba' in prov_lower:
