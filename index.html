@@ -390,12 +390,33 @@ textarea { resize: vertical; min-height: 72px; }
   background: linear-gradient(160deg, var(--accent) 0%, #1A3820 100%);
   color: #fff;
   padding: 20px max(16px,env(safe-area-inset-right,0px)) 24px max(16px,env(safe-area-inset-left,0px));
+  position: relative;
+}
+.res-hero-logo {
+  display: flex; align-items: center; gap: 10px;
+  margin-bottom: 14px; opacity: .9;
+}
+.res-hero-logo img {
+  height: 28px; width: auto; object-fit: contain;
+  filter: brightness(0) invert(1);
+}
+.res-hero-logo-text {
+  font-family: 'Montserrat', sans-serif;
+  font-size: 10px; font-weight: 600;
+  letter-spacing: 1.5px; text-transform: uppercase;
+  opacity: .75; line-height: 1.3;
 }
 .res-nombre {
   font-family: 'Montserrat', sans-serif;
-  font-weight: 800; font-size: 20px; text-wrap: balance;
+  font-weight: 800; font-size: 22px; text-wrap: balance;
+  line-height: 1.2;
 }
-.res-meta { font-size: 12px; opacity: .8; margin-top: 6px; display: flex; flex-wrap: wrap; gap: 10px; }
+.res-meta { font-size: 12px; opacity: .8; margin-top: 8px; display: flex; flex-wrap: wrap; gap: 10px; }
+.res-gold-line {
+  height: 2px; background: var(--gold);
+  margin: 12px 0 0; border-radius: 1px;
+  width: 48px;
+}
 
 .stats-row {
   display: grid; grid-template-columns: 1fr 1fr;
@@ -404,12 +425,13 @@ textarea { resize: vertical; min-height: 72px; }
 .stat-card {
   background: var(--bg-card);
   border: 1px solid var(--border);
-  border-radius: var(--r-lg); padding: 14px;
+  border-left: 3px solid var(--accent);
+  border-radius: var(--r-lg); padding: 14px 14px 12px;
   box-shadow: var(--sh-sm);
 }
-.stat-lbl { font-size: 10px; font-family: 'Montserrat', sans-serif; font-weight: 700; letter-spacing: .7px; text-transform: uppercase; color: var(--fg-3); }
-.stat-val { font-size: 22px; font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; margin-top: 2px; line-height: 1.1; }
-.stat-unit { font-size: 11px; color: var(--fg-3); margin-top: 2px; }
+.stat-lbl { font-size: 9.5px; font-family: 'Montserrat', sans-serif; font-weight: 700; letter-spacing: .8px; text-transform: uppercase; color: var(--fg-3); }
+.stat-val { font-size: 24px; font-weight: 800; color: var(--accent); font-variant-numeric: tabular-nums; margin-top: 4px; line-height: 1.1; font-family: 'Montserrat', sans-serif; }
+.stat-unit { font-size: 10px; color: var(--fg-3); margin-top: 3px; }
 
 .sec-title {
   font-family: 'Montserrat', sans-serif;
@@ -464,14 +486,23 @@ tr:last-child td { border-bottom: none; }
 
 /* Footer CT */
 .ct-footer {
-  background: var(--accent); color: #fff;
-  border-radius: var(--r-lg); padding: 18px 20px;
+  background: linear-gradient(135deg, #2E5C35 0%, #1A3820 100%);
+  color: #fff;
+  border-radius: var(--r-lg); padding: 20px 20px;
   margin-top: 8px;
   display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  position: relative; overflow: hidden;
 }
-.ct-brand { font-family: 'Montserrat', sans-serif; font-weight: 800; font-size: 16px; }
-.ct-sub   { font-size: 11px; opacity: .75; margin-top: 1px; }
-.ct-right { font-size: 11px; opacity: .8; text-align: right; }
+.ct-footer::before {
+  content: '';
+  position: absolute; top: 0; left: 0; right: 0;
+  height: 3px; background: var(--gold);
+}
+.ct-footer-logo { height: 32px; width: auto; object-fit: contain; opacity: .9; }
+.ct-brand { font-family: 'Montserrat', sans-serif; font-weight: 800; font-size: 15px; }
+.ct-sub   { font-size: 10.5px; opacity: .75; margin-top: 2px; }
+.ct-right { font-size: 10px; opacity: .75; text-align: right; line-height: 1.5; }
+.ct-footer-divider { width: 1px; background: rgba(255,255,255,.2); align-self: stretch; flex-shrink: 0; }
 
 /* Botones resultado */
 .res-btns { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 16px 0; }
@@ -727,7 +758,13 @@ tr:last-child td { border-bottom: none; }
   <div class="scroll-body" style="padding-top:0;">
     <!-- Hero -->
     <div class="res-hero">
+      <div class="res-hero-logo">
+        <img src="https://ctinmobiliariarural.com/img/logo-blanco.png" alt="CT" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
+        <div class="logo-mark" style="display:none;font-size:18px;width:36px;height:36px;border-radius:4px;">CT</div>
+        <div class="res-hero-logo-text">Cámpora Troncoso<br>Inmobiliaria Rural</div>
+      </div>
       <div class="res-nombre" id="res-nombre">—</div>
+      <div class="res-gold-line"></div>
       <div class="res-meta">
         <span>📍 <span id="res-partido">—</span></span>
         <span>📅 <span id="res-fecha">—</span></span>
@@ -838,11 +875,13 @@ tr:last-child td { border-bottom: none; }
 
       <!-- CT footer -->
       <div class="ct-footer">
+        <img src="https://ctinmobiliariarural.com/img/logo-blanco.png" alt="CT" class="ct-footer-logo" onerror="this.style.display='none'">
         <div>
           <div class="ct-brand">Cámpora Troncoso</div>
           <div class="ct-sub">Inmobiliaria Rural · Mercedes, BA</div>
+          <div class="ct-sub" style="margin-top:2px;">Calle 23 N° 524 B · +54 9 11 3258 6146</div>
         </div>
-        <div class="ct-right">CT Satelital<br><span id="footer-fecha"></span></div>
+        <div class="ct-right">CT Satelital<br>Análisis remoto<br><span id="footer-fecha"></span></div>
       </div>
       <div style="height:8px;"></div>
     </div>
@@ -1155,22 +1194,25 @@ async function iniciarAnalisis() {
     // Guardar en DB
     const campo = dbSave({
       nombre,
-      partido:    document.getElementById('f-partido').value,
-      sup:        document.getElementById('f-sup').value || data.superficie,
-      precio:     document.getElementById('f-precio').value,
-      desc:       document.getElementById('f-desc').value,
-      anio:       document.getElementById('f-anio').value,
-      ndvi:       data.ndvi_promedio,
-      superficie: data.superficie,
-      ambientes:  data.ambientes,
-      suelos:     data.suelos,
+      partido:     document.getElementById('f-partido').value.trim(),
+      propietario: document.getElementById('f-propietario').value.trim(),
+      sup:         document.getElementById('f-sup').value || data.superficie,
+      precio:      document.getElementById('f-precio').value.trim(),
+      desc:        document.getElementById('f-desc').value.trim(),
+      anio:        document.getElementById('f-anio').value,
+      ndvi:        data.ndvi_promedio,
+      superficie:  data.superficie,
+      ambientes:   data.ambientes,
+      suelos:      data.suelos,
       url_verano:    data.url_verano,
       url_invierno:  data.url_invierno,
       url_ndvi:      data.url_ndvi,
       url_ambientes: data.url_ambientes,
       url_suelos:    data.url_suelos,
       url_topografia: data.url_topografia,
-      thumb:      data.url_ndvi || data.url_verano || null,
+      anio_verano:   data.anio_verano,
+      anio_invierno: data.anio_invierno,
+      thumb:         data.url_ndvi || data.url_verano || null,
     });
 
     mostrarResultado(campo);
@@ -1192,16 +1234,17 @@ function mostrarResultado(campo) {
   const fecha = new Date(campo.fecha || Date.now())
     .toLocaleDateString('es-AR', { day:'2-digit', month:'long', year:'numeric' });
 
-  document.getElementById('res-nombre').textContent     = campo.nombre || '—';
-  document.getElementById('res-topbar-title').textContent = campo.nombre || 'Resultado';
+  const nombre = (campo.nombre && campo.nombre !== 'undefined') ? campo.nombre : '—';
+  document.getElementById('res-nombre').textContent     = nombre;
+  document.getElementById('res-topbar-title').textContent = (nombre !== '—') ? nombre : 'Resultado';
   document.getElementById('res-partido').textContent    = campo.partido || '—';
   document.getElementById('res-fecha').textContent      = fecha;
   document.getElementById('res-sup').textContent        = campo.superficie
     ? Math.round(campo.superficie).toLocaleString('es-AR') : (campo.sup || '—');
   document.getElementById('res-topbar-sub').textContent = campo.partido || 'Análisis completado';
   document.getElementById('footer-fecha').textContent   = fecha;
-  document.getElementById('anio-ver').textContent = campo.anio || '2024';
-  document.getElementById('anio-inv').textContent = campo.anio || '2024';
+  document.getElementById('anio-ver').textContent = campo.anio_verano || campo.anio || '2024';
+  document.getElementById('anio-inv').textContent = campo.anio_invierno || campo.anio || '2024';
 
   document.getElementById('s-ndvi').textContent = campo.ndvi
     ? parseFloat(campo.ndvi).toFixed(3) : '—';
@@ -1333,8 +1376,8 @@ function exportarPDF() {
   const sup  = d.superficie ? Math.round(d.superficie).toLocaleString('es-AR') : (d.sup || '—');
 
   const imgFn = (url, emoji, label) => url
-    ? `<div class="map-box"><img src="${url}" alt="${label}"><div class="ml">${label}</div></div>`
-    : `<div class="map-box"><div style="aspect-ratio:4/3;display:flex;align-items:center;justify-content:center;background:#eee;font-size:32px;">${emoji}</div><div class="ml">${label}</div></div>`;
+    ? `<div class="map-box"><img src="${url}" alt="${label}" style="width:100%;aspect-ratio:4/3;object-fit:cover;display:block;"><div class="ml">${label}</div></div>`
+    : `<div class="map-box"><div class="map-empty">Sin imagen disponible</div><div class="ml">${label}</div></div>`;
 
   const ambRows = (d.ambientes||[]).map((a,i) => {
     const cc = ['#4CAF50','#2196F3','#FF9800','#9C27B0','#F44336','#009688'][i%6];
@@ -1353,83 +1396,242 @@ function exportarPDF() {
   ).join('');
 
   const html = `<!DOCTYPE html><html lang="es"><head>
-<meta charset="UTF-8"><title>Informe CT — ${d.nombre}</title>
-<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700;800&family=Inter:wght@400;500&display=swap" rel="stylesheet">
+<meta charset="UTF-8"><title>Informe CT — ${d.nombre||'Campo'}</title>
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=Montserrat:wght@400;500;600;700;800&family=Inter:wght@400;500&display=swap" rel="stylesheet">
 <style>
 *{box-sizing:border-box;margin:0;padding:0;}
-body{font-family:'Inter',sans-serif;color:#1C1F1A;background:#fff;font-size:13px;}
-.page{max-width:900px;margin:0 auto;padding:36px 44px;}
-.cover{background:linear-gradient(145deg,#2E5C35,#1A3820);color:#fff;padding:52px 44px;border-radius:16px;margin-bottom:28px;}
-.cv-ct{font-family:'Montserrat',sans-serif;font-size:34px;font-weight:800;letter-spacing:1px;margin-bottom:4px;}
-.cv-sub{font-size:12px;opacity:.7;margin-bottom:36px;}
-.cv-title{font-family:'Montserrat',sans-serif;font-size:26px;font-weight:800;line-height:1.25;margin-bottom:8px;}
-.cv-meta{font-size:12.5px;opacity:.8;display:flex;flex-wrap:wrap;gap:14px;margin-top:14px;}
-h2{font-family:'Montserrat',sans-serif;font-size:13px;font-weight:700;color:#2E5C35;
-   padding-bottom:7px;border-bottom:2px solid #EBF3EC;margin:26px 0 14px;letter-spacing:.2px;}
-.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:22px;}
-.s{background:#F5F3EE;border-radius:10px;padding:14px;text-align:center;}
-.sv{font-family:'Montserrat',sans-serif;font-size:21px;font-weight:800;color:#2E5C35;}
-.sl{font-size:10px;color:#7A806F;text-transform:uppercase;letter-spacing:.6px;margin-top:3px;}
-.map-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:22px;}
-.map-box{border-radius:10px;overflow:hidden;border:1px solid #DDD9CF;}
+body{font-family:'Inter',sans-serif;color:#1C1F1A;background:#fff;font-size:13px;line-height:1.5;}
+.page{max-width:860px;margin:0 auto;padding:0;}
+
+/* ── PORTADA ── */
+.cover{
+  background:linear-gradient(160deg,#2E5C35 0%,#1A3820 100%);
+  color:#fff;
+  padding:52px 52px 44px;
+  position:relative;
+  page-break-after:always;
+}
+.cover-header{
+  display:flex;align-items:center;justify-content:space-between;
+  margin-bottom:56px;
+}
+.cover-logo{height:40px;width:auto;object-fit:contain;filter:brightness(0) invert(1);}
+.cover-logo-fallback{
+  font-family:'Montserrat',sans-serif;font-size:26px;font-weight:900;
+  letter-spacing:-1px;color:#fff;
+  border:2px solid rgba(255,255,255,.5);
+  padding:4px 10px;border-radius:4px;display:none;
+}
+.cover-badge{
+  font-family:'Montserrat',sans-serif;
+  font-size:10px;font-weight:700;letter-spacing:2px;text-transform:uppercase;
+  opacity:.65;
+}
+.cover-gold-line{
+  width:56px;height:3px;background:#A8793C;border-radius:1.5px;margin-bottom:20px;
+}
+.cv-title{
+  font-family:'Playfair Display',serif;
+  font-size:36px;font-weight:900;line-height:1.15;
+  margin-bottom:18px;letter-spacing:-.3px;
+}
+.cv-meta{
+  display:grid;grid-template-columns:repeat(4,1fr);
+  gap:0;
+  border-top:1px solid rgba(255,255,255,.2);
+  margin-top:36px;
+  padding-top:0;
+}
+.cv-stat{
+  padding:18px 16px 16px;
+  border-right:1px solid rgba(255,255,255,.15);
+}
+.cv-stat:last-child{border-right:none;}
+.cv-sv{font-family:'Montserrat',sans-serif;font-size:22px;font-weight:800;color:#fff;line-height:1;}
+.cv-sl{font-size:10px;color:rgba(255,255,255,.6);text-transform:uppercase;letter-spacing:.8px;margin-top:6px;}
+.cv-price{color:#A8793C!important;}
+
+/* ── CUERPO ── */
+.body{padding:44px 52px;}
+
+/* Ficha técnica header */
+.section-header{
+  display:flex;align-items:center;justify-content:space-between;
+  margin:0 0 18px;padding-bottom:10px;
+  border-bottom:2.5px solid #2E5C35;
+}
+.section-title{
+  font-family:'Montserrat',sans-serif;
+  font-size:11px;font-weight:800;
+  color:#2E5C35;letter-spacing:1.5px;text-transform:uppercase;
+}
+.section-logo-sm{height:22px;width:auto;object-fit:contain;opacity:.7;}
+
+h2{
+  font-family:'Montserrat',sans-serif;font-size:10.5px;font-weight:800;
+  color:#2E5C35;letter-spacing:1.2px;text-transform:uppercase;
+  padding-bottom:8px;border-bottom:1.5px solid #E8EDE4;
+  margin:28px 0 14px;
+}
+
+/* Descripción + ficha técnica lado a lado */
+.desc-ficha{display:grid;grid-template-columns:1fr 1fr;gap:28px;margin-bottom:28px;}
+.desc-block p{font-size:12.5px;color:#3A3F35;line-height:1.75;}
+.ficha-table{border:1px solid #D5DDD0;border-radius:8px;overflow:hidden;}
+.ficha-row{display:grid;grid-template-columns:1fr 1fr;border-bottom:1px solid #E8EDE4;}
+.ficha-row:last-child{border-bottom:none;}
+.ficha-lbl{font-family:'Montserrat',sans-serif;font-size:9.5px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;
+  color:#6B7264;padding:9px 12px;background:#F5F7F3;}
+.ficha-val{font-size:12px;font-weight:600;color:#1C1F1A;padding:9px 12px;background:#fff;}
+
+/* Mapas */
+.map-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:22px;}
+.map-box{border-radius:8px;overflow:hidden;border:1px solid #D5DDD0;box-shadow:0 1px 4px rgba(0,0,0,.07);}
 .map-box img{width:100%;aspect-ratio:4/3;object-fit:cover;display:block;}
-.ml{font-family:'Montserrat',sans-serif;font-size:10px;font-weight:700;letter-spacing:.4px;
-    text-transform:uppercase;color:#4A4F45;padding:7px 10px;background:#FAFAF7;border-top:1px solid #DDD9CF;}
-table{width:100%;border-collapse:collapse;font-size:12px;margin-bottom:18px;}
-th{background:#2E5C35;color:#fff;font-family:'Montserrat',sans-serif;font-size:9.5px;font-weight:700;
-   letter-spacing:.5px;text-transform:uppercase;padding:8px 10px;text-align:left;}
-td{padding:7px 10px;border-bottom:1px solid #EEE;vertical-align:middle;}
-tr:nth-child(even) td{background:#FAFAF7;}
-.fotos{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:22px;}
-.footer{background:#2E5C35;color:#fff;border-radius:12px;padding:18px 26px;
-  display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:8px;}
-.fb{font-family:'Montserrat',sans-serif;font-weight:800;font-size:16px;}
-.fs{font-size:11px;opacity:.75;margin-top:1px;}
-.fr{font-size:11px;opacity:.8;text-align:right;}
-@media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact;}}
+.ml{
+  font-family:'Montserrat',sans-serif;font-size:9.5px;font-weight:700;letter-spacing:.5px;
+  text-transform:uppercase;color:#4A4F45;padding:7px 10px;
+  background:#F5F7F3;border-top:1px solid #E0E4DB;
+}
+.map-empty{
+  aspect-ratio:4/3;display:flex;align-items:center;justify-content:center;
+  background:#F5F7F3;color:#AAB0A5;font-size:11px;font-weight:600;
+  letter-spacing:.5px;text-transform:uppercase;
+}
+
+/* Tablas */
+table{width:100%;border-collapse:collapse;font-size:11.5px;margin-bottom:18px;border-radius:8px;overflow:hidden;}
+thead tr{background:#2E5C35;}
+th{
+  font-family:'Montserrat',sans-serif;font-size:9px;font-weight:700;
+  letter-spacing:.6px;text-transform:uppercase;color:#fff;
+  padding:9px 10px;text-align:left;white-space:nowrap;
+}
+td{padding:8px 10px;border-bottom:1px solid #EDF0EB;vertical-align:middle;color:#3A3F35;}
+tr:last-child td{border-bottom:none;}
+tr:nth-child(even) td{background:#F9FBF8;}
+
+/* Fotos */
+.fotos{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:22px;}
+.fotos img{width:100%;aspect-ratio:4/3;object-fit:cover;border-radius:8px;border:1px solid #D5DDD0;display:block;}
+
+/* Footer */
+.footer{
+  background:linear-gradient(135deg,#2E5C35,#1A3820);
+  color:#fff;padding:20px 28px;
+  display:flex;align-items:center;gap:20px;
+  position:relative;
+}
+.footer::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;background:#A8793C;}
+.footer-logo{height:28px;width:auto;object-fit:contain;opacity:.9;flex-shrink:0;}
+.footer-mid{flex:1;}
+.fb{font-family:'Montserrat',sans-serif;font-weight:800;font-size:14px;}
+.fs{font-size:10px;opacity:.7;margin-top:2px;}
+.fr{font-size:10px;opacity:.7;text-align:right;flex-shrink:0;line-height:1.6;}
+
+@media print{
+  body{-webkit-print-color-adjust:exact;print-color-adjust:exact;}
+  .cover{page-break-after:always;}
+}
 </style></head><body>
-<div class="page">
+
+<!-- ── PORTADA ── -->
 <div class="cover">
-  <div class="cv-ct">CT</div>
-  <div class="cv-sub">Cámpora Troncoso Inmobiliaria Rural · Mercedes, Buenos Aires</div>
-  <div class="cv-title">${d.nombre}</div>
+  <div class="cover-header">
+    <img src="https://ctinmobiliariarural.com/img/logo-blanco.png" alt="CT" class="cover-logo"
+      onerror="this.style.display='none';document.querySelectorAll('.cover-logo-fallback').forEach(el=>el.style.display='block')">
+    <div class="cover-logo-fallback">CT</div>
+    <div class="cover-badge">Informe de Análisis Satelital</div>
+  </div>
+  <div class="cover-gold-line"></div>
+  <div class="cv-title">${(d.nombre||'Campo').replace(/</g,'&lt;')}</div>
+  ${d.partido?`<p style="font-size:14px;opacity:.75;margin-bottom:0;">📍 ${d.partido}</p>`:''}
   <div class="cv-meta">
-    <span>📍 ${d.partido||'—'}</span>
-    <span>📅 ${fecha}</span>
-    <span>📐 ${sup} ha</span>
-    ${d.precio?`<span>💰 ${d.precio}</span>`:''}
+    <div class="cv-stat">
+      <div class="cv-sv">${sup}</div>
+      <div class="cv-sl">Hectáreas</div>
+    </div>
+    <div class="cv-stat">
+      <div class="cv-sv">${d.ndvi?parseFloat(d.ndvi).toFixed(3):'—'}</div>
+      <div class="cv-sl">NDVI promedio</div>
+    </div>
+    <div class="cv-stat">
+      <div class="cv-sv">${(d.ambientes||[]).length||'—'}</div>
+      <div class="cv-sl">Ambientes</div>
+    </div>
+    <div class="cv-stat">
+      ${d.precio?`<div class="cv-sv cv-price">${d.precio}</div><div class="cv-sl">Precio pedido</div>`
+               :`<div class="cv-sv">${d.anio||2024}</div><div class="cv-sl">Año análisis</div>`}
+    </div>
   </div>
 </div>
-${d.desc ? `<h2>Descripción General</h2><p style="color:#4A4F45;line-height:1.7;margin-bottom:22px;">${d.desc}</p>` : ''}
-<h2>Resumen del Análisis</h2>
-<div class="stats">
-  <div class="s"><div class="sv">${d.ndvi?parseFloat(d.ndvi).toFixed(3):'—'}</div><div class="sl">NDVI promedio</div></div>
-  <div class="s"><div class="sv">${sup}</div><div class="sl">Hectáreas</div></div>
-  <div class="s"><div class="sv">${(d.ambientes||[]).length||'—'}</div><div class="sl">Ambientes</div></div>
-  <div class="s"><div class="sv">${(d.suelos||[]).length||'—'}</div><div class="sl">Unid. suelo</div></div>
+
+<!-- ── CUERPO ── -->
+<div class="body">
+
+${(d.desc || d.partido || d.propietario) ? `
+<div class="section-header">
+  <div class="section-title">Ficha Técnica</div>
+  <img src="https://ctinmobiliariarural.com/img/logo-blanco.png" alt="" class="section-logo-sm"
+    style="filter:sepia(1) saturate(2) hue-rotate(85deg) brightness(.6);"
+    onerror="this.style.display='none'">
 </div>
-<h2>Imágenes Sentinel-2 — ${d.anio||2024}</h2>
+<div class="desc-ficha">
+  ${d.desc ? `<div class="desc-block"><p>${d.desc.replace(/</g,'&lt;').replace(/\n/g,'<br>')}</p></div>`
+           : '<div class="desc-block"><p style="color:#AAB0A5;font-size:12px;">Sin descripción.</p></div>'}
+  <div>
+    <div class="ficha-table">
+      ${d.partido?`<div class="ficha-row"><div class="ficha-lbl">Partido / Prov.</div><div class="ficha-val">${d.partido}</div></div>`:''}
+      ${d.propietario?`<div class="ficha-row"><div class="ficha-lbl">Propietario</div><div class="ficha-val">${d.propietario}</div></div>`:''}
+      <div class="ficha-row"><div class="ficha-lbl">Superficie</div><div class="ficha-val">${sup} ha</div></div>
+      ${d.precio?`<div class="ficha-row"><div class="ficha-lbl">Precio pedido</div><div class="ficha-val">${d.precio}</div></div>`:''}
+      <div class="ficha-row"><div class="ficha-lbl">NDVI promedio</div><div class="ficha-val">${d.ndvi?parseFloat(d.ndvi).toFixed(3):'—'}</div></div>
+      <div class="ficha-row"><div class="ficha-lbl">Ambientes</div><div class="ficha-val">${(d.ambientes||[]).length||'—'}</div></div>
+      <div class="ficha-row"><div class="ficha-lbl">Unidades suelo</div><div class="ficha-val">${(d.suelos||[]).length||'—'}</div></div>
+      <div class="ficha-row"><div class="ficha-lbl">Fecha análisis</div><div class="ficha-val">${fecha}</div></div>
+    </div>
+  </div>
+</div>` : ''}
+
+<h2>Imágenes Satelitales Sentinel-2 — ${d.anio||2024}</h2>
 <div class="map-grid">
-  ${imgFn(d.url_verano,   '🌿','🌿 Verano (Dic–Feb)')}
-  ${imgFn(d.url_invierno, '❄️','❄️ Invierno (Jun–Ago)')}
+  ${imgFn(d.url_verano,   '🌿','Verano (Dic–Feb)')}
+  ${imgFn(d.url_invierno, '❄️','Invierno (Jun–Ago)')}
 </div>
-<h2>NDVI y Ambientes</h2>
+
+<h2>NDVI y Ambientes Homogéneos</h2>
 <div class="map-grid">
-  ${imgFn(d.url_ndvi,      '🌱','🌱 NDVI Promedio 5 Años')}
-  ${imgFn(d.url_ambientes, '🗺️','🗺️ Ambientes K-means')}
+  ${imgFn(d.url_ndvi,      '🌱','NDVI — Promedio 5 Años')}
+  ${imgFn(d.url_ambientes, '🗺️','Ambientes K-means')}
 </div>
-${ambRows ? `<table><thead><tr><th>Amb.</th><th>Hectáreas</th><th>%</th><th>NDVI prom.</th></tr></thead><tbody>${ambRows}</tbody></table>` : ''}
+${ambRows ? `
+<table>
+  <thead><tr><th>Ambiente</th><th>Hectáreas</th><th>% del campo</th><th>NDVI prom.</th></tr></thead>
+  <tbody>${ambRows}</tbody>
+</table>` : ''}
+
 <h2>Suelos INTA y Topografía</h2>
 <div class="map-grid">
-  ${imgFn(d.url_suelos,    '🟤','🟤 Suelos INTA 1:50.000')}
-  ${imgFn(d.url_topografia,'⛰️','⛰️ Topografía SRTM')}
+  ${imgFn(d.url_suelos,    '🟤','Suelos INTA 1:50.000')}
+  ${imgFn(d.url_topografia,'⛰️','Topografía SRTM')}
 </div>
-${sueRows ? `<table><thead><tr><th>Unidad</th><th>Descripción</th><th>Clase</th><th>ha</th><th>%</th></tr></thead><tbody>${sueRows}</tbody></table>` : ''}
+${sueRows ? `
+<table>
+  <thead><tr><th>Unidad</th><th>Descripción</th><th>Clase</th><th>ha</th><th>%</th></tr></thead>
+  <tbody>${sueRows}</tbody>
+</table>` : ''}
+
 ${fotoImgs ? `<h2>Fotos del Campo</h2><div class="fotos">${fotoImgs}</div>` : ''}
+
 <div class="footer">
-  <div><div class="fb">Cámpora Troncoso</div><div class="fs">Inmobiliaria Rural · Mercedes, Buenos Aires</div></div>
-  <div class="fr">CT Satelital<br>Análisis remoto de campos<br>${fecha}</div>
+  <img src="https://ctinmobiliariarural.com/img/logo-blanco.png" alt="CT" class="footer-logo" onerror="this.style.display='none'">
+  <div class="footer-mid">
+    <div class="fb">Cámpora Troncoso</div>
+    <div class="fs">Inmobiliaria Rural · Calle 23 N° 524 B, Mercedes (B) · +54 9 11 3258 6146 · +54 9 2324 648969</div>
+  </div>
+  <div class="fr">CT Satelital<br>${fecha}</div>
 </div>
+
 </div></body></html>`;
 
   const w = window.open('','_blank');
