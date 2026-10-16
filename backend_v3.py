@@ -58,6 +58,10 @@ def init_gee():
         )
 
 try:
+    _cred_env = os.environ.get('GEE_CREDENTIALS_JSON')
+    _proj_env = os.environ.get('GEE_PROJECT')
+    print(f'[DEBUG] GEE_CREDENTIALS_JSON presente: {bool(_cred_env)} (len={len(_cred_env) if _cred_env else 0})')
+    print(f'[DEBUG] GEE_PROJECT: {_proj_env}')
     init_gee()
     print('✓ GEE inicializado')
 except Exception as e:
