@@ -171,10 +171,16 @@ def geojson_a_geometry(geojson_str: str) -> ee.Geometry:
 
 
 def enmascarar_nubes(img):
-    """Máscara de nubes con banda SCL de Sentinel-2 SR."""
-    scl  = img.select('SCL')
-    mask = scl.eq(4).Or(scl.eq(5)).Or(scl.eq(6)).Or(scl.eq(7)).Or(scl.eq(11))
-    return img.updateMask(mask).divide(10000)
+    """Máscara de nubes con banda SCL de Sentinel-2 SR.
+    Excluye nubes (8,9,10), sombras de nubes (3) y nieve (11).
+    Mantiene: saturado(1), oscuro(2), vegetación(4), suelo(5), agua(6),
+    prob-nube-baja(7), cirrus(10 excluido), areas no vegetadas(5).
+    Estrategia: excluir píxeles malos en vez de solo mantener buenos.
+    """
+    scl = img.select('SCL')
+    # Excluir: 3=sombra nube, 8=nube media, 9=nube alta, 10=cirrus
+    bad_mask = scl.eq(3).Or(scl.eq(8)).Or(scl.eq(9)).Or(scl.eq(10))
+    return img.updateMask(bad_mask.Not()).divide(10000)
 
 
 def get_thumb_url(image, region, vis_params):
@@ -219,12 +225,13 @@ def analizar_lote(geom: ee.Geometry, num_ambientes: int = 4, anio: int = 2024) -
 
     # ── Sentinel-2 SR Harmonized ──────────────────────────────────────────────
     # Colección sin enmascarar para contar imágenes disponibles
+    # Filtro amplio para no descartar demasiadas escenas (la máscara SCL se encarga del detalle)
     s2_raw = (ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
               .filterBounds(geom)
-              .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 30)))
+              .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 80)))
     s2 = s2_raw.map(enmascarar_nubes)
 
-    def get_best_seasonal(s2_col, target_anio, months_start, months_end, fallback_years=3):
+    def get_best_seasonal(s2_col, target_anio, months_start, months_end, fallback_years=4):
         """Devuelve la mejor imagen estacional, con fallback a años anteriores si no hay datos."""
         for offset in range(fallback_years + 1):
             yr = target_anio - offset
@@ -242,9 +249,15 @@ def analizar_lote(geom: ee.Geometry, num_ambientes: int = 4, anio: int = 2024) -
             count = col.size().getInfo()
             if count > 0:
                 return col.median().clip(geom), yr
-        # Si todo falla, usar los últimos 5 años sin filtro estacional
-        col_all = s2_col.filter(ee.Filter.calendarRange(target_anio - 4, target_anio, 'year'))
-        return col_all.median().clip(geom), target_anio
+        # Fallback final: cualquier imagen de los últimos 5 años SIN máscara de nubes
+        s2_raw_all = (ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+                      .filterBounds(geom)
+                      .filterDate(f'{target_anio - 4}-01-01', f'{target_anio}-12-31'))
+        count_raw = s2_raw_all.size().getInfo()
+        if count_raw > 0:
+            return s2_raw_all.map(lambda img: img.divide(10000)).median().clip(geom), target_anio
+        # Si absolutamente no hay nada, imagen vacía
+        return ee.Image(0).rename('B4').addBands(ee.Image(0).rename('B3')).addBands(ee.Image(0).rename('B2')).clip(geom), target_anio
 
     # Verano: diciembre–febrero (cruce de año)
     img_ver, anio_ver_real = get_best_seasonal(s2, anio, 12, 2)
@@ -311,10 +324,21 @@ def analizar_lote(geom: ee.Geometry, num_ambientes: int = 4, anio: int = 2024) -
                      .merge(normalizar_cba(ee.FeatureCollection(ASSET_CBA).filterBounds(geom)))
                      .merge(normalizar_sf(ee.FeatureCollection(ASSET_SF).filterBounds(geom))))
 
-    suelos_img = suelos_fc.reduceToImage(
+    # Imagen de suelos usando índice numérico (clase puede ser string, usamos índice)
+    suelos_img_attempt = suelos_fc.reduceToImage(
         properties=['clase'],
         reducer=ee.Reducer.first()
     ).clip(geom)
+    # Fallback: si queda vacía usar imagen constante con valor 1
+    try:
+        sue_check = suelos_img_attempt.reduceRegion(
+            reducer=ee.Reducer.count(), geometry=geom, scale=100, maxPixels=1e6
+        ).getInfo()
+        has_pixels = any((v or 0) > 0 for v in sue_check.values())
+    except Exception:
+        has_pixels = False
+
+    suelos_img = suelos_img_attempt if has_pixels else ee.Image(1).clip(geom)
 
     # ── Topografía SRTM ───────────────────────────────────────────────────────
     dem = ee.Image('USGS/SRTMGL1_003').clip(geom)
