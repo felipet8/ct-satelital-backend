@@ -221,7 +221,7 @@ def analizar_lote(geom: ee.Geometry, num_ambientes: int = 4, anio: int = 2024) -
     Ejecuta el análisis completo sobre la geometría dada y devuelve un dict
     con superficie, ndvi, URLs de 6 mapas, lista de ambientes y suelos.
     """
-    region_bounds = geom.bounds()
+    region_bounds = geom  # usar el polígono exacto, no el bounding box rectangular
 
     # ── Sentinel-2 SR Harmonized ──────────────────────────────────────────────
     # Colección sin enmascarar para contar imágenes disponibles
@@ -411,13 +411,23 @@ def analizar_lote(geom: ee.Geometry, num_ambientes: int = 4, anio: int = 2024) -
 
     # ── Tabla de suelos ───────────────────────────────────────────────────────
     sue_props = suelos_fc.toList(200).getInfo()
+    # Debug: loguear propiedades del primer feature para verificar nombres de campos
+    if sue_props:
+        first_props = sue_props[0].get('properties', {})
+        print(f'[DEBUG] Suelos props keys: {list(first_props.keys())}')
+        print(f'[DEBUG] Suelos first feature: {first_props}')
     suelos    = []
     seen      = set()
     for feat in sue_props:
         props = feat.get('properties', {})
-        sim   = str(props.get('simbolo') or props.get('SIMBOLO') or '—')
-        nom   = str(props.get('nombre')  or props.get('NOMBRE')  or '—')
-        cls   = str(props.get('clase')   or props.get('CLASE')   or props.get('CLASE_CAP') or '—')
+        # Buscar símbolo en todas las variantes posibles de nombres de campo
+        sim = str(props.get('simbolo') or props.get('SIMBOLO') or props.get('Simbolo') or
+                  props.get('symbol') or props.get('SYMBOL') or props.get('SIM') or '—')
+        nom = str(props.get('nombre')  or props.get('NOMBRE')  or props.get('Nombre') or
+                  props.get('name')    or props.get('NAME')    or props.get('NOM') or '—')
+        cls = str(props.get('clase')   or props.get('CLASE')   or props.get('Clase') or
+                  props.get('CLASE_CAP') or props.get('clase_cap') or
+                  props.get('cap')     or props.get('CAP') or '—')
         if sim in seen:
             continue
         seen.add(sim)

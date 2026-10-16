@@ -1634,11 +1634,12 @@ ${fotoImgs ? `<h2>Fotos del Campo</h2><div class="fotos">${fotoImgs}</div>` : ''
 
 </div></body></html>`;
 
-  // Intentar window.open primero; si falla usar descarga blob
+  // 1) Intentar window.open con document.write
   let opened = false;
   try {
-    const w = window.open('','_blank');
+    const w = window.open('', '_blank');
     if (w && !w.closed) {
+      w.document.open();
       w.document.write(html);
       w.document.close();
       opened = true;
@@ -1646,17 +1647,36 @@ ${fotoImgs ? `<h2>Fotos del Campo</h2><div class="fotos">${fotoImgs}</div>` : ''
   } catch(e) {}
 
   if (!opened) {
-    // Fallback: descargar como archivo .html que se puede abrir e imprimir
-    const blob = new Blob([html], {type: 'text/html;charset=utf-8'});
-    const url  = URL.createObjectURL(blob);
-    const a    = document.createElement('a');
-    a.href     = url;
-    a.download = `CT-Satelital_${(d.nombre||'campo').replace(/[^a-zA-Z0-9áéíóúñ ]/g,'_')}.html`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    setTimeout(() => URL.revokeObjectURL(url), 5000);
-    showToast('Informe descargado — abrilo y usá Imprimir → Guardar como PDF');
+    // 2) Intentar abrir como data: URI en nueva pestaña
+    try {
+      const encoded = 'data:text/html;charset=utf-8,' + encodeURIComponent(html);
+      const a = document.createElement('a');
+      a.href = encoded;
+      a.target = '_blank';
+      a.rel = 'noopener';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      opened = true;
+    } catch(e) {}
+  }
+
+  if (!opened) {
+    // 3) Fallback final: blob download
+    try {
+      const blob = new Blob([html], {type: 'text/html;charset=utf-8'});
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement('a');
+      a.href     = url;
+      a.download = 'CT-Informe.html';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+      showToast('Informe descargado — abrilo en el navegador e imprimí como PDF');
+    } catch(e) {
+      showToast('No se pudo generar el PDF. Probá desde el navegador Chrome.');
+    }
   }
 }
 
