@@ -181,8 +181,9 @@ def enmascarar_nubes(img):
     # Excluir: 3=sombra nube, 8=nube media, 9=nube alta, 10=cirrus
     bad_mask = scl.eq(3).Or(scl.eq(8)).Or(scl.eq(9)).Or(scl.eq(10))
     # copyProperties: divide() borra system:time_start y rompe los filtros por fecha
-    return (img.updateMask(bad_mask.Not()).divide(10000)
-            .copyProperties(img, ['system:time_start', 'CLOUDY_PIXEL_PERCENTAGE']))
+    # ee.Image(...) es necesario: copyProperties devuelve un Element genérico
+    return ee.Image(img.updateMask(bad_mask.Not()).divide(10000)
+                    .copyProperties(img, ['system:time_start', 'CLOUDY_PIXEL_PERCENTAGE']))
 
 
 def get_thumb_url(image, region, vis_params):
