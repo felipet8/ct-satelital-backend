@@ -515,6 +515,17 @@ tr:last-child td { border-bottom: none; }
   transition: all .15s;
 }
 .btn-sec:active { background: var(--bg-panel); }
+.dl-group { margin-bottom: 14px; }
+.dl-group-lbl { font-family:'Montserrat',sans-serif; font-size:10px; font-weight:700; letter-spacing:.6px;
+  text-transform:uppercase; color:var(--fg-3); margin-bottom:6px; }
+.dl-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:8px; }
+.dl-btn { padding:10px 8px; border-radius:var(--r); border:1.5px solid var(--border); background:var(--bg-card);
+  color:var(--fg); font-family:'Montserrat',sans-serif; font-size:11px; font-weight:600; cursor:pointer;
+  text-align:center; text-decoration:none; display:block; min-width:0; }
+.dl-btn:active { background:var(--bg-panel); }
+.dl-btn:disabled { opacity:.6; cursor:wait; }
+.dl-note { font-size:11px; color:var(--fg-3); line-height:1.4; margin-top:4px; }
+.sw { display:inline-block; width:10px; height:10px; border-radius:3px; margin-right:6px; vertical-align:-1px; }
 .btn-sec.accent { background: var(--accent); color: #fff; border-color: var(--accent); }
 
 /* Error banner */
@@ -861,6 +872,42 @@ tr:last-child td { border-bottom: none; }
           <thead><tr><th>Unidad</th><th>Descripción</th><th>Clase</th><th>ha</th><th>%</th></tr></thead>
           <tbody id="tb-sue"><tr><td colspan="5" style="text-align:center;padding:16px;color:var(--fg-3);">—</td></tr></tbody>
         </table>
+      </div>
+
+      <!-- Descargas -->
+      <div class="sec-title">Descargas</div>
+      <div id="dl-panel">
+        <div class="dl-group">
+          <div class="dl-group-lbl">GeoTIFF (georreferenciado)</div>
+          <div class="dl-grid">
+            <button class="dl-btn" onclick="descargar('tif_ambientes',this)">Ambientes</button>
+            <button class="dl-btn" onclick="descargar('tif_ndvi',this)">NDVI</button>
+            <button class="dl-btn" onclick="descargar('tif_elevacion',this)">Elevación</button>
+            <button class="dl-btn" onclick="descargar('tif_verano',this)">Sentinel-2 verano</button>
+            <button class="dl-btn" onclick="descargar('tif_invierno',this)">Sentinel-2 invierno</button>
+          </div>
+        </div>
+        <div class="dl-group">
+          <div class="dl-group-lbl">Shapefile (.zip)</div>
+          <div class="dl-grid">
+            <button class="dl-btn" onclick="descargar('shp_suelos',this)">Suelos</button>
+            <button class="dl-btn" onclick="descargar('shp_ambientes',this)">Ambientes</button>
+            <button class="dl-btn" onclick="descargar('shp_perimetro',this)">Perímetro</button>
+          </div>
+        </div>
+        <div class="dl-group">
+          <div class="dl-group-lbl">KMZ (Google Earth)</div>
+          <div class="dl-grid">
+            <button class="dl-btn" onclick="descargar('kmz_suelos',this)">Suelos</button>
+            <button class="dl-btn" onclick="descargar('kmz_ambientes',this)">Ambientes</button>
+            <button class="dl-btn" onclick="descargar('kmz_perimetro',this)">Perímetro</button>
+          </div>
+        </div>
+        <div class="dl-group">
+          <div class="dl-group-lbl">Imágenes (JPG)</div>
+          <div class="dl-grid" id="dl-jpg"></div>
+        </div>
+        <div class="dl-note">Cada archivo se genera en el momento; los de ambientes pueden tardar hasta un minuto.</div>
       </div>
 
       <!-- Fotos -->
@@ -1228,6 +1275,8 @@ async function iniciarAnalisis() {
       anio_invierno: data.anio_invierno,
       fecha_verano:   data.fecha_verano,
       fecha_invierno: data.fecha_invierno,
+      geojson:        data.geojson,
+      num_ambientes:  data.num_ambientes,
       thumb:        data.url_ndvi || data.url_verano || null,
     });
 
@@ -1279,6 +1328,13 @@ function mostrarResultado(campo) {
   setTile('tw-sue',  campo.url_suelos,    '🟤');
   setTile('tw-top',  campo.url_topografia,'⛰️');
 
+  // Links de imágenes JPG
+  const jpgs = [['Sentinel-2 verano', campo.url_verano], ['Sentinel-2 invierno', campo.url_invierno],
+                ['NDVI', campo.url_ndvi], ['Ambientes', campo.url_ambientes],
+                ['Suelos', campo.url_suelos], ['Topografía', campo.url_topografia]];
+  document.getElementById('dl-jpg').innerHTML = jpgs.filter(j => j[1]).map(j =>
+    `<a class="dl-btn" href="${j[1]}" target="_blank" rel="noopener" download>${j[0]}</a>`).join('');
+
   // Tabla ambientes
   const tbAmb = document.getElementById('tb-amb');
   const ambs  = campo.ambientes || [];
@@ -1302,7 +1358,7 @@ function mostrarResultado(campo) {
   tbSue.innerHTML = suelos.length ? suelos.map(s => {
     const w = Math.round(((s.hectareas||0) / maxSHa) * 80);
     return `<tr>
-      <td><span class="chip">${s.simbolo||'—'}</span></td>
+      <td><span class="sw" style="background:${s.color||'#999'}"></span><span class="chip">${s.simbolo||'—'}</span></td>
       <td style="min-width:0;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${(s.nombre||'').substring(0,40)||'—'}</td>
       <td>${s.clase||'—'}</td>
       <td style="font-variant-numeric:tabular-nums;">${(s.hectareas||0).toFixed(1)}</td>
@@ -1403,7 +1459,7 @@ function exportarPDF() {
   }).join('');
 
   const sueRows = (d.suelos||[]).map(s =>
-    `<tr><td>${s.simbolo||'—'}</td><td>${(s.nombre||'').substring(0,60)||'—'}</td>
+    `<tr><td><span style="display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;background:${s.color||'#999'}"></span>${s.simbolo||'—'}</td><td>${(s.nombre||'').substring(0,60)||'—'}</td>
      <td>${s.clase||'—'}</td><td>${(s.hectareas||0).toFixed(1)}</td><td>${(s.porcentaje||0).toFixed(1)}%</td></tr>`
   ).join('');
 
@@ -1650,24 +1706,94 @@ ${fotoImgs ? `<h2>Fotos del Campo</h2><div class="fotos">${fotoImgs}</div>` : ''
 
 </div></body></html>`;
 
-  // Crear blob URL y abrir en nueva pestaña (permite Imprimir → Guardar como PDF)
-  const blob    = new Blob([html], {type: 'text/html;charset=utf-8'});
-  const blobUrl = URL.createObjectURL(blob);
-  const w = window.open(blobUrl, '_blank');
-  if (w) {
-    // Limpiar la URL del blob cuando se cierre (5 min de gracia)
-    setTimeout(() => URL.revokeObjectURL(blobUrl), 300000);
-    showToast('Se abrió el informe — usá Ctrl+P para guardar como PDF');
-  } else {
-    // Popup bloqueado: ofrecer descarga directa del HTML
-    const a    = document.createElement('a');
-    a.href     = blobUrl;
+  // Imprimir desde un iframe oculto: no usa ventanas emergentes (no las bloquea el navegador)
+  const old = document.getElementById('pdf-frame');
+  if (old) old.remove();
+  const fr = document.createElement('iframe');
+  fr.id = 'pdf-frame';
+  fr.style.cssText = 'position:fixed;left:-10000px;top:0;width:900px;height:1200px;border:0;';
+  document.body.appendChild(fr);
+
+  const fallback = () => {
+    const blob = new Blob([html], {type: 'text/html;charset=utf-8'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
     a.download = `CT_${(d.nombre||'campo').replace(/[^a-zA-Z0-9]/g,'_')}.html`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
+    document.body.appendChild(a); a.click(); a.remove();
     showToast('Informe descargado — abrilo y usá Ctrl+P → Guardar como PDF');
+  };
+
+  let printed = false;
+  const doPrint = () => {
+    if (printed) return; printed = true;
+    try {
+      fr.contentWindow.focus();
+      fr.contentWindow.print();
+    } catch (e) { fallback(); }
+  };
+  fr.onload = () => {
+    const fonts = fr.contentDocument && fr.contentDocument.fonts;
+    (fonts && fonts.ready ? fonts.ready : Promise.resolve()).then(() => setTimeout(doPrint, 400));
+  };
+  setTimeout(doPrint, 15000);   // por si alguna imagen tarda demasiado
+  fr.srcdoc = html;
+}
+
+/* ─── Descargas (GeoTIFF / SHP / KMZ) ────────────────────── */
+function saveBlob(blob, name) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+}
+
+function startUrlDownload(url) {
+  // iframe oculto: el servidor responde con 'attachment', así no se sale de la app
+  const f = document.createElement('iframe');
+  f.style.display = 'none';
+  f.src = url;
+  document.body.appendChild(f);
+  setTimeout(() => f.remove(), 120000);
+}
+
+async function descargar(tipo, btn) {
+  const d = resultData;
+  if (!d || !d.geojson) {
+    showToast('Este campo se analizó antes de las descargas — volvé a analizarlo');
+    return;
+  }
+  const backendUrl = document.getElementById('backend-url').value.trim();
+  const orig = btn.textContent;
+  btn.disabled = true; btn.textContent = 'Generando…';
+  try {
+    const fd = new FormData();
+    fd.append('tipo', tipo);
+    fd.append('nombre', d.nombre || 'campo');
+    fd.append('geojson', JSON.stringify(d.geojson));
+    fd.append('anio', d.anio || new Date().getFullYear());
+    fd.append('num_ambientes', d.num_ambientes || (d.ambientes || []).length || 4);
+    const resp = await fetch(backendUrl + '/descargar', { method: 'POST', body: fd });
+    const ct = resp.headers.get('content-type') || '';
+    if (!resp.ok) {
+      let m = '';
+      try { m = (await resp.json()).error; } catch {}
+      throw new Error(m || ('HTTP ' + resp.status));
+    }
+    if (ct.includes('application/json')) {
+      const j = await resp.json();
+      if (!j.url) throw new Error('Respuesta sin enlace de descarga');
+      startUrlDownload(j.url);
+    } else {
+      const base = (d.nombre || 'campo').replace(/[^a-zA-Z0-9_-]+/g, '_');
+      saveBlob(await resp.blob(), `${base}_${tipo.split('_')[1]}.kmz`);
+    }
+    showToast('Descarga iniciada');
+  } catch (e) {
+    console.error(e);
+    showToast('⚠️ ' + e.message);
+  } finally {
+    btn.disabled = false; btn.textContent = orig;
   }
 }
 

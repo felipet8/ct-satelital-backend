@@ -13,7 +13,7 @@ Novedades v3:
 import os, re, json, math, zipfile, tempfile, sqlite3, time
 from datetime import datetime
 from pathlib import Path
-from flask import Flask, request, jsonify, g
+from flask import Flask, request, jsonify, g, Response
 from flask_cors import CORS
 import ee
 
@@ -162,6 +162,8 @@ def geojson_a_geometry(geojson_str: str) -> ee.Geometry:
     t  = gj.get('type', '')
     if t == 'Polygon':
         return ee.Geometry.Polygon(gj['coordinates'])
+    elif t == 'MultiPolygon':
+        return ee.Geometry(gj)
     elif t == 'Feature':
         return ee.Geometry(gj['geometry'])
     elif t == 'FeatureCollection':
@@ -226,186 +228,238 @@ def normalizar_sf(fc):
     }))
 
 
+# ─── Capas reutilizables (análisis + descargas) ───────────────────────────────
+S2 = 'COPERNICUS/S2_SR_HARMONIZED'
+BANDAS_S2 = ['B2', 'B3', 'B4', 'B8', 'B12']
+AMB_COLORS = ['#4CAF50', '#2196F3', '#FF9800', '#9C27B0', '#F44336', '#009688']
+SUELO_COLORS = ['#8B4513', '#2E86C1', '#E67E22', '#27AE60', '#8E44AD', '#F1C40F',
+                '#C0392B', '#16A085', '#D35400', '#7F8C8D', '#2C3E50', '#E91E63']
+
+
+def get_best_seasonal(geom, target_anio, tipo, fallback_years=5):
+    """Elige UNA imagen real (la de menor nubosidad) de la estación pedida.
+    tipo='verano': dic(año-1)–feb(año) | tipo='invierno': jun–ago(año).
+    Si no hay imágenes ese año, retrocede a años anteriores.
+    Devuelve (imagen_para_mostrar, imagen_enmascarada, año_real, fecha 'YYYY-MM-DD')."""
+    hoy = datetime.utcnow()
+    for offset in range(fallback_years + 1):
+        yr = target_anio - offset
+        if tipo == 'verano':
+            ini, fin = f'{yr-1}-12-01', f'{yr}-03-01'
+        else:
+            ini, fin = f'{yr}-06-01', f'{yr}-09-01'
+        if datetime.strptime(ini, '%Y-%m-%d') > hoy:
+            continue  # estación todavía no empezó
+        col = ee.ImageCollection(S2).filterBounds(geom).filterDate(ini, fin)
+        # Preferir escenas que cubren todo el campo
+        col_full = col.filter(ee.Filter.contains(leftField='.geo', rightValue=geom))
+        if col_full.size().getInfo() > 0:
+            col = col_full
+        if col.size().getInfo() == 0:
+            continue
+        best = ee.Image(col.sort('CLOUDY_PIXEL_PERCENTAGE').first())
+        fecha = ee.Date(best.get('system:time_start')).format('YYYY-MM-dd').getInfo()
+        display = best.select(BANDAS_S2).divide(10000).clip(geom)
+        masked  = enmascarar_nubes(best).select(BANDAS_S2).clip(geom)
+        return display, masked, yr, fecha
+    vacia = (ee.Image(0).rename('B8').addBands(ee.Image(0).rename('B4'))
+             .addBands(ee.Image(0).rename('B12')).addBands(ee.Image(0).rename('B3'))
+             .addBands(ee.Image(0).rename('B2')).clip(geom))
+    return vacia, vacia, target_anio, None
+
+
+def calc_ndvi(geom, anio):
+    """NDVI medio de temporada alta (nov–mar) de los últimos 5 años."""
+    s2_range = (ee.ImageCollection(S2)
+                .filterBounds(geom)
+                .filterDate(f'{anio-5}-01-01', f'{anio}-12-31')
+                .filter(ee.Filter.calendarRange(11, 3, 'month'))
+                .map(enmascarar_nubes))
+    s2_ndvi = s2_range.map(lambda img: img.addBands(
+        img.normalizedDifference(['B8', 'B4']).rename('NDVI')))
+    return s2_ndvi, s2_ndvi.select('NDVI').mean().clip(geom)
+
+
+def calc_ambientes(geom, img_ver_m, img_ndvi, num_ambientes):
+    """Clasificación K-means sobre la imagen de verano + NDVI."""
+    img_base = img_ver_m.addBands(img_ndvi)
+    bands = ['B2', 'B3', 'B4', 'B8', 'NDVI']
+    img_clus = img_base.select([b for b in bands if b in img_base.bandNames().getInfo()])
+    training  = img_clus.sample(region=geom, scale=30, numPixels=1000, seed=42)
+    clusterer = ee.Clusterer.wekaKMeans(num_ambientes).train(training)
+    return img_clus.cluster(clusterer).clip(geom)
+
+
+def detectar_provincia(geom):
+    centroid = geom.centroid(maxError=1)
+    for asset in ('FAO/GAUL/2025/level1', 'FAO/GAUL/2015/level1'):
+        try:
+            feat = ee.FeatureCollection(asset).filterBounds(centroid).first()
+            return (feat.get('ADM1_NAME').getInfo() or '').lower()
+        except Exception:
+            continue
+    return ''
+
+
+def _get_prop(props, *keys):
+    for k in keys:
+        v = props.get(k)
+        if v is not None and str(v).strip() not in ('', 'None', 'null'):
+            return str(v).strip()
+    return '—'
+
+
+def _fuzzy(props, *frags):
+    for frag in frags:
+        for k, v in props.items():
+            if frag in k.lower() and v is not None and str(v).strip() not in ('', 'None', 'null'):
+                return str(v).strip()
+    return '—'
+
+
+def procesar_suelos(geom, superficie):
+    """Suelos INTA dentro del campo.
+    Devuelve (lista_para_tabla, ee.FeatureCollection con propiedades normalizadas e 'idx')."""
+    prov_lower = detectar_provincia(geom)
+    if 'córdoba' in prov_lower or 'cordoba' in prov_lower:
+        raw = ee.FeatureCollection(ASSET_CBA).filterBounds(geom)
+    elif 'santa fe' in prov_lower:
+        raw = ee.FeatureCollection(ASSET_SF).filterBounds(geom)
+    else:
+        raw = ee.FeatureCollection(ASSET_BA).filterBounds(geom)
+
+    if raw.size().getInfo() == 0:
+        raw = (ee.FeatureCollection(ASSET_BA).filterBounds(geom)
+               .merge(ee.FeatureCollection(ASSET_CBA).filterBounds(geom))
+               .merge(ee.FeatureCollection(ASSET_SF).filterBounds(geom)))
+
+    def _clip(f):
+        g = f.geometry().intersection(geom, 1)
+        return ee.Feature(g, f.toDictionary()).set('_ha', g.area(1).divide(10000))
+
+    feats = raw.map(_clip).toList(300).getInfo()
+    if feats:
+        print(f"[DEBUG] Suelos props: {feats[0].get('properties', {})}")
+
+    grupos = {}
+    for i, feat in enumerate(feats):
+        props = feat.get('properties', {})
+        ha = props.get('_ha') or 0
+        if ha < 0.05 or not feat.get('geometry'):
+            continue
+        sim = _get_prop(props, 'SIMBOLO','simbolo','Simbolo','SYMBOL','symbol','SIM','sim','SIMB','simb','COD','cod')
+        if sim == '—': sim = _fuzzy(props, 'simb', 'sym', 'cod', 'uc', 'unidad')
+        nom = _get_prop(props, 'NOMBRE','nombre','Nombre','NAME','name','NOM','nom','DESCRIPCION','descripcion','DESC','desc')
+        if nom == '—': nom = _fuzzy(props, 'nombre', 'nom', 'desc', 'serie', 'name', 'taxon')
+        cls = _get_prop(props, 'CLASE','clase','Clase','CLASE_CAP','clase_cap','CAP','cap','CAPACIDAD','capacidad','CLAS','clas')
+        if cls == '—': cls = _fuzzy(props, 'clase', 'cap', 'clas', 'ip', 'uso')
+        key = sim if sim != '—' else f'{nom}|{cls}|{i}'
+        g = grupos.setdefault(key, {'simbolo': sim, 'nombre': nom, 'clase': cls, 'ha': 0.0, 'geoms': []})
+        g['ha'] += ha
+        g['geoms'].append(feat['geometry'])
+
+    orden = sorted(grupos.values(), key=lambda x: x['ha'], reverse=True)
+    suelos, ee_feats = [], []
+    for idx, g in enumerate(orden):
+        color = SUELO_COLORS[idx % len(SUELO_COLORS)]
+        suelos.append({
+            'simbolo':    g['simbolo'],
+            'nombre':     g['nombre'][:60],
+            'clase':      g['clase'],
+            'hectareas':  round(g['ha'], 1),
+            'porcentaje': round((g['ha'] / superficie) * 100, 1),
+            'color':      color,
+        })
+        for gj in g['geoms']:
+            try:
+                ee_feats.append(ee.Feature(ee.Geometry(gj), {
+                    'simbolo': g['simbolo'], 'nombre': g['nombre'][:60],
+                    'clase': g['clase'], 'ha': round(g['ha'], 2), 'idx': idx}))
+            except Exception as e:
+                print(f'[WARN] geometría de suelo omitida: {e}')
+    return suelos, ee.FeatureCollection(ee_feats)
+
+
+def imagen_suelos(fc, geom, n):
+    """Imagen categórica: cada unidad de suelo con su color (por índice numérico)."""
+    if n == 0:
+        return ee.Image(0).clip(geom), {'min': 0, 'max': 1, 'palette': ['#999999', '#999999']}
+    img = fc.reduceToImage(properties=['idx'], reducer=ee.Reducer.first()).clip(geom)
+    pal = [SUELO_COLORS[i % len(SUELO_COLORS)] for i in range(max(n, 2))]
+    return img, {'min': 0, 'max': max(n - 1, 1), 'palette': pal}
+
+
+def fc_ambientes(img_amb):
+    """Polígonos de ambientes (K-means) con propiedades 'ambiente' (A1..An) y 'ha'."""
+    vec = img_amb.select(0).toInt().reduceToVectors(
+        geometry=img_amb.geometry(), scale=30, geometryType='polygon',
+        eightConnected=False, labelProperty='amb', maxPixels=1e9, bestEffort=True)
+    def _p(f):
+        n = ee.Number(f.get('amb')).add(1).int()
+        return ee.Feature(f.geometry(), {
+            'ambiente': ee.String('A').cat(n.format()),
+            'num': n,
+            'ha': f.geometry().area(1).divide(10000)})
+    return vec.map(_p)
+
+
 # ─── Análisis principal ────────────────────────────────────────────────────────
 def analizar_lote(geom: ee.Geometry, num_ambientes: int = 4, anio: int = 2024) -> dict:
     """
     Ejecuta el análisis completo sobre la geometría dada y devuelve un dict
     con superficie, ndvi, URLs de 6 mapas, lista de ambientes y suelos.
     """
-    region_bounds = geom  # usar el polígono exacto, no el bounding box rectangular
+    img_ver, img_ver_m, anio_ver_real, fecha_ver = get_best_seasonal(geom, anio, 'verano')
+    img_inv, img_inv_m, anio_inv_real, fecha_inv = get_best_seasonal(geom, anio, 'invierno')
 
-    # ── Sentinel-2 SR Harmonized ──────────────────────────────────────────────
-    S2 = 'COPERNICUS/S2_SR_HARMONIZED'
-    hoy = datetime.utcnow()
-
-    def get_best_seasonal(target_anio, tipo, fallback_years=5):
-        """Elige UNA imagen real (la de menor nubosidad) de la estación pedida.
-        tipo='verano': dic(año-1)–feb(año) | tipo='invierno': jun–ago(año).
-        Si no hay imágenes ese año, retrocede a años anteriores.
-        Devuelve (imagen_para_mostrar, imagen_enmascarada, año_real, fecha 'YYYY-MM-DD')."""
-        for offset in range(fallback_years + 1):
-            yr = target_anio - offset
-            if tipo == 'verano':
-                ini, fin = f'{yr-1}-12-01', f'{yr}-03-01'
-            else:
-                ini, fin = f'{yr}-06-01', f'{yr}-09-01'
-            if datetime.strptime(ini, '%Y-%m-%d') > hoy:
-                continue  # estación todavía no empezó
-            col = (ee.ImageCollection(S2)
-                   .filterBounds(geom)
-                   .filterDate(ini, fin))
-            # Preferir escenas que cubren todo el campo
-            col_full = col.filter(ee.Filter.contains(leftField='.geo', rightValue=geom))
-            if col_full.size().getInfo() > 0:
-                col = col_full
-            if col.size().getInfo() == 0:
-                continue
-            best = ee.Image(col.sort('CLOUDY_PIXEL_PERCENTAGE').first())
-            fecha = ee.Date(best.get('system:time_start')).format('YYYY-MM-dd').getInfo()
-            display = best.select(['B2','B3','B4','B8','B12']).divide(10000).clip(geom)
-            masked  = enmascarar_nubes(best).select(['B2','B3','B4','B8','B12']).clip(geom)
-            return display, masked, yr, fecha
-        # Si absolutamente no hay nada, imagen vacía
-        vacia = (ee.Image(0).rename('B8').addBands(ee.Image(0).rename('B4'))
-                 .addBands(ee.Image(0).rename('B12')).addBands(ee.Image(0).rename('B3'))
-                 .addBands(ee.Image(0).rename('B2')).clip(geom))
-        return vacia, vacia, target_anio, None
-
-    img_ver, img_ver_m, anio_ver_real, fecha_ver = get_best_seasonal(anio, 'verano')
-    img_inv, img_inv_m, anio_inv_real, fecha_inv = get_best_seasonal(anio, 'invierno')
-
-    # ── NDVI multi-año (anio-5 → anio) ────────────────────────────────────────
-    anio_ini = anio - 5
-    s2_range = (ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
-                .filterBounds(geom)
-                .filterDate(f'{anio_ini}-01-01', f'{anio}-12-31')
-                .filter(ee.Filter.calendarRange(11, 3, 'month'))  # temporada alta
-                .map(enmascarar_nubes))
-
-    def add_ndvi(img):
-        ndvi = img.normalizedDifference(['B8', 'B4']).rename('NDVI')
-        return img.addBands(ndvi)
-
-    s2_ndvi = s2_range.map(add_ndvi)
-    img_ndvi_raw = s2_ndvi.select('NDVI').mean().clip(geom)
-
-    # NDVI scalar para stats
+    s2_ndvi, img_ndvi_raw = calc_ndvi(geom, anio)
     ndvi_stat = img_ndvi_raw.reduceRegion(
-        reducer=ee.Reducer.mean(),
-        geometry=geom,
-        scale=30,
-        maxPixels=1e9
+        reducer=ee.Reducer.mean(), geometry=geom, scale=30, maxPixels=1e9
     ).getInfo().get('NDVI', 0)
 
-    # ── Superficie ────────────────────────────────────────────────────────────
-    area_m2   = geom.area(maxError=1).getInfo()
-    superficie = area_m2 / 10000.0
+    superficie = geom.area(maxError=1).getInfo() / 10000.0
 
-    # ── Ambientes K-means ─────────────────────────────────────────────────────
-    img_base = img_ver_m.addBands(img_ndvi_raw)
-    bands    = ['B2', 'B3', 'B4', 'B8', 'NDVI']
-    img_clus = img_base.select([b for b in bands if b in img_base.bandNames().getInfo()])
+    img_amb = calc_ambientes(geom, img_ver_m, img_ndvi_raw, num_ambientes)
 
-    training  = img_clus.sample(region=geom, scale=30, numPixels=1000, seed=42)
-    clusterer = ee.Clusterer.wekaKMeans(num_ambientes).train(training)
-    img_amb   = img_clus.cluster(clusterer).clip(geom)
-
-    # ── Suelos INTA ───────────────────────────────────────────────────────────
-    # Detectar provincia por centroide
-    centroid = geom.centroid(maxError=1)
-    prov_lower = ''
-    try:
-        gaul = ee.FeatureCollection('FAO/GAUL/2025/level1')
-        prov_feat = gaul.filterBounds(centroid).first()
-        prov_name = prov_feat.get('ADM1_NAME').getInfo()
-        prov_lower = (prov_name or '').lower()
-    except Exception:
-        try:
-            # Fallback a versión 2015 si la 2025 falla
-            gaul = ee.FeatureCollection('FAO/GAUL/2015/level1')
-            prov_feat = gaul.filterBounds(centroid).first()
-            prov_name = prov_feat.get('ADM1_NAME').getInfo()
-            prov_lower = (prov_name or '').lower()
-        except Exception:
-            prov_lower = ''  # default → Buenos Aires
-
-    suelos_fc = None
-    if 'córdoba' in prov_lower or 'cordoba' in prov_lower:
-        suelos_fc = normalizar_cba(ee.FeatureCollection(ASSET_CBA).filterBounds(geom))
-    elif 'santa fe' in prov_lower:
-        suelos_fc = normalizar_sf(ee.FeatureCollection(ASSET_SF).filterBounds(geom))
-    else:
-        # Buenos Aires y resto
-        suelos_fc = normalizar_ba(ee.FeatureCollection(ASSET_BA).filterBounds(geom))
-
-    # Merge de los tres assets como fallback si el primero queda vacío
-    if suelos_fc.size().getInfo() == 0:
-        suelos_fc = (normalizar_ba(ee.FeatureCollection(ASSET_BA).filterBounds(geom))
-                     .merge(normalizar_cba(ee.FeatureCollection(ASSET_CBA).filterBounds(geom)))
-                     .merge(normalizar_sf(ee.FeatureCollection(ASSET_SF).filterBounds(geom))))
-
-    # Imagen de suelos usando índice numérico (clase puede ser string, usamos índice)
-    suelos_img_attempt = suelos_fc.reduceToImage(
-        properties=['clase'],
-        reducer=ee.Reducer.first()
-    ).clip(geom)
-    # Fallback: si queda vacía usar imagen constante con valor 1
-    try:
-        sue_check = suelos_img_attempt.reduceRegion(
-            reducer=ee.Reducer.count(), geometry=geom, scale=100, maxPixels=1e6
-        ).getInfo()
-        has_pixels = any((v or 0) > 0 for v in sue_check.values())
-    except Exception:
-        has_pixels = False
-
-    suelos_img = suelos_img_attempt if has_pixels else ee.Image(1).clip(geom)
+    suelos, suelos_fc = procesar_suelos(geom, superficie)
+    suelos_img, sue_vis = imagen_suelos(suelos_fc, geom, len(suelos))
 
     # ── Topografía SRTM ───────────────────────────────────────────────────────
     dem = ee.Image('USGS/SRTMGL1_003').clip(geom)
     elev_stats = dem.reduceRegion(
-        reducer=ee.Reducer.minMax(),
-        geometry=geom,
-        scale=30,
-        maxPixels=1e9
+        reducer=ee.Reducer.minMax(), geometry=geom, scale=30, maxPixels=1e9
     ).getInfo()
     elev_min = elev_stats.get('elevation_min', 0) or 0
     elev_max = elev_stats.get('elevation_max', 100) or 100
 
-    # ── Generar miniaturas ────────────────────────────────────────────────────
+    # ── Miniaturas ────────────────────────────────────────────────────────────
     rgb_vis  = {'bands': ['B8', 'B4', 'B12'], 'min': 0.0, 'max': 0.5}  # falso color NIR-R-SWIR
     ndvi_vis = {'palette': ['#d73027','#f46d43','#fdae61','#fee08b',
                              '#d9ef8b','#a6d96a','#66bd63','#1a9850'],
                 'min': 0.0, 'max': 0.8}
-    amb_vis  = {'min': 0, 'max': num_ambientes - 1,
-                'palette': ['#4CAF50','#2196F3','#FF9800','#9C27B0','#F44336','#009688'][:num_ambientes]}
-    sue_vis  = {'min': 1, 'max': 8,
-                'palette': ['#8B4513','#A0522D','#CD853F','#DEB887','#F4A460','#D2B48C','#BC8B5A','#E8D5B0']}
+    amb_vis  = {'min': 0, 'max': max(num_ambientes - 1, 1),
+                'palette': AMB_COLORS[:max(num_ambientes, 2)]}
     top_vis  = {'min': elev_min, 'max': elev_max,
                 'palette': ['#006837','#31a354','#78c679','#c2e699','#ffffcc',
                              '#feb24c','#fd8d3c','#f03b20','#bd0026']}
 
-    url_ver  = get_thumb_url(img_ver,     region_bounds, rgb_vis)
-    url_inv  = get_thumb_url(img_inv,     region_bounds, rgb_vis)
-    url_ndvi = get_thumb_url(img_ndvi_raw, region_bounds, ndvi_vis)
-    url_amb  = get_thumb_url(img_amb,     region_bounds, amb_vis)
-    url_sue  = get_thumb_url(suelos_img,  region_bounds, sue_vis)
-    url_top  = get_thumb_url(dem,         region_bounds, top_vis)
+    url_ver  = get_thumb_url(img_ver,      geom, rgb_vis)
+    url_inv  = get_thumb_url(img_inv,      geom, rgb_vis)
+    url_ndvi = get_thumb_url(img_ndvi_raw, geom, ndvi_vis)
+    url_amb  = get_thumb_url(img_amb,      geom, amb_vis)
+    url_sue  = get_thumb_url(suelos_img,   geom, sue_vis)
+    url_top  = get_thumb_url(dem,          geom, top_vis)
 
     # ── Tabla de ambientes ────────────────────────────────────────────────────
     ndvi_by_amb = (s2_ndvi.select('NDVI').mean()
                    .addBands(img_amb.rename('cluster'))
                    .reduceRegion(
                        reducer=ee.Reducer.mean().group(groupField=1, groupName='cluster'),
-                       geometry=geom,
-                       scale=30,
-                       maxPixels=1e9
+                       geometry=geom, scale=30, maxPixels=1e9
                    ).getInfo().get('groups', []))
 
     area_by_amb = img_amb.reduceRegion(
-        reducer=ee.Reducer.frequencyHistogram(),
-        geometry=geom,
-        scale=30,
-        maxPixels=1e9
+        reducer=ee.Reducer.frequencyHistogram(), geometry=geom, scale=30, maxPixels=1e9
     ).getInfo().get('cluster', {})
 
     total_px  = sum(area_by_amb.values()) or 1
@@ -417,79 +471,6 @@ def analizar_lote(geom: ee.Geometry, num_ambientes: int = 4, anio: int = 2024) -
         ndvi_g = next((g['mean'] for g in ndvi_by_amb if int(g['cluster']) == i), None)
         ambientes.append({'hectareas': round(ha, 1), 'porcentaje': round(pct, 1),
                           'ndvi_promedio': round(ndvi_g, 3) if ndvi_g else None})
-
-    # ── Tabla de suelos ───────────────────────────────────────────────────────
-    # Leer features crudos del asset (sin normalizar) para tener todas las propiedades reales
-    if 'córdoba' in prov_lower or 'cordoba' in prov_lower:
-        raw_sue_fc = ee.FeatureCollection(ASSET_CBA).filterBounds(geom)
-    elif 'santa fe' in prov_lower:
-        raw_sue_fc = ee.FeatureCollection(ASSET_SF).filterBounds(geom)
-    else:
-        raw_sue_fc = ee.FeatureCollection(ASSET_BA).filterBounds(geom)
-
-    if raw_sue_fc.size().getInfo() == 0:
-        raw_sue_fc = (ee.FeatureCollection(ASSET_BA).filterBounds(geom)
-                      .merge(ee.FeatureCollection(ASSET_CBA).filterBounds(geom))
-                      .merge(ee.FeatureCollection(ASSET_SF).filterBounds(geom)))
-
-    sue_props = raw_sue_fc.toList(200).getInfo()
-    # Debug: loguear propiedades del primer feature para verificar nombres de campos
-    if sue_props:
-        first_props = sue_props[0].get('properties', {})
-        print(f'[DEBUG] Suelos props keys: {list(first_props.keys())}')
-        print(f'[DEBUG] Suelos first feature: {first_props}')
-    suelos    = []
-    seen      = set()
-
-    def _get_prop(props, *keys):
-        """Busca la primera clave no-vacía entre las dadas."""
-        for k in keys:
-            v = props.get(k)
-            if v is not None and str(v).strip() not in ('', 'None', 'null'):
-                return str(v).strip()
-        return '—'
-
-    def _fuzzy(props, *frags):
-        """Busca una propiedad cuyo nombre (en minúsculas) contenga alguno de los fragmentos."""
-        for frag in frags:
-            for k, v in props.items():
-                if frag in k.lower() and v is not None and str(v).strip() not in ('', 'None', 'null'):
-                    return str(v).strip()
-        return '—'
-
-    for idx, feat in enumerate(sue_props):
-        props = feat.get('properties', {})
-        sim = _get_prop(props, 'SIMBOLO','simbolo','Simbolo','SYMBOL','symbol','SIM','sim','SIMB','simb','COD','cod')
-        if sim == '—': sim = _fuzzy(props, 'simb', 'sym', 'cod', 'uc', 'unidad')
-        nom = _get_prop(props, 'NOMBRE','nombre','Nombre','NAME','name','NOM','nom','DESCRIPCION','descripcion','DESC','desc')
-        if nom == '—': nom = _fuzzy(props, 'nombre', 'nom', 'desc', 'serie', 'name', 'taxon')
-        cls = _get_prop(props, 'CLASE','clase','Clase','CLASE_CAP','clase_cap','CAP','cap','CAPACIDAD','capacidad','CLAS','clas')
-        if cls == '—': cls = _fuzzy(props, 'clase', 'cap', 'clas', 'ip', 'uso')
-        # Clave de duplicados: si no hay símbolo, no colapsar todo en una sola fila
-        key = sim if sim != '—' else f'{nom}|{cls}|{idx}'
-        if key in seen:
-            continue
-        seen.add(key)
-
-        # Área de intersección
-        try:
-            geom_sue = ee.Feature(feat).geometry()
-            inter    = geom.intersection(geom_sue, maxError=1)
-            area_ha  = inter.area(maxError=1).getInfo() / 10000
-        except Exception:
-            area_ha  = 0.0
-
-        if area_ha < 0.1:
-            continue
-        suelos.append({
-            'simbolo':    sim,
-            'nombre':     nom[:60],
-            'clase':      cls,
-            'hectareas':  round(area_ha, 1),
-            'porcentaje': round((area_ha / superficie) * 100, 1),
-        })
-
-    suelos.sort(key=lambda x: x['hectareas'], reverse=True)
 
     return {
         'superficie':    round(superficie, 1),
@@ -506,7 +487,73 @@ def analizar_lote(geom: ee.Geometry, num_ambientes: int = 4, anio: int = 2024) -
         'fecha_invierno': fecha_inv,
         'anio_verano':   anio_ver_real,
         'anio_invierno': anio_inv_real,
+        'num_ambientes': num_ambientes,
+        'geojson':       geom.getInfo(),   # el frontend lo reenvía para pedir descargas
     }
+
+
+# ─── Descargas (GeoTIFF, Shapefile, KMZ) ──────────────────────────────────────
+def _url_raster(img, geom, scale_base, nbandas, nombre):
+    """URL de descarga GeoTIFF. Sube la escala si el archivo superaría ~30 MB."""
+    bbox_m2 = geom.bounds(1).area(1).getInfo()
+    scale = scale_base
+    while (bbox_m2 / (scale * scale)) * nbandas * 4 > 30e6:
+        scale *= 2
+    return img.getDownloadURL({
+        'name': nombre, 'scale': scale, 'region': geom,
+        'crs': 'EPSG:4326', 'format': 'GEO_TIFF'})
+
+
+def _kmz_bytes(fc, nombre):
+    """Baja el KML de GEE y lo empaqueta como KMZ."""
+    import io, urllib.request
+    url = fc.getDownloadURL(filetype='KML', filename=nombre)
+    kml = urllib.request.urlopen(url, timeout=60).read()
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr('doc.kml', kml)
+    return buf.getvalue()
+
+
+def generar_descarga(tipo, geom, anio, num_ambientes, nombre):
+    """Devuelve ('url', url) o ('bytes', (archivo, mime, datos))."""
+    base = re.sub(r'[^A-Za-z0-9_-]+', '_', nombre or 'campo')[:40] or 'campo'
+
+    if tipo == 'tif_elevacion':
+        img = ee.Image('USGS/SRTMGL1_003').select('elevation').clip(geom)
+        return 'url', _url_raster(img, geom, 30, 1, f'{base}_elevacion')
+    if tipo == 'tif_ndvi':
+        _, ndvi = calc_ndvi(geom, anio)
+        return 'url', _url_raster(ndvi.toFloat(), geom, 10, 1, f'{base}_ndvi')
+    if tipo in ('tif_verano', 'tif_invierno'):
+        est = 'verano' if tipo == 'tif_verano' else 'invierno'
+        disp, _, _, _ = get_best_seasonal(geom, anio, est)
+        return 'url', _url_raster(disp.toFloat(), geom, 10, 5, f'{base}_sentinel2_{est}')
+    if tipo == 'tif_ambientes':
+        _, img_ver_m, _, _ = get_best_seasonal(geom, anio, 'verano')
+        _, ndvi = calc_ndvi(geom, anio)
+        amb = calc_ambientes(geom, img_ver_m, ndvi, num_ambientes)
+        return 'url', _url_raster(amb.toInt16(), geom, 10, 1, f'{base}_ambientes')
+
+    # Vectores
+    if tipo.endswith('_suelos'):
+        _, fc = procesar_suelos(geom, geom.area(1).getInfo() / 10000.0)
+    elif tipo.endswith('_ambientes'):
+        _, img_ver_m, _, _ = get_best_seasonal(geom, anio, 'verano')
+        _, ndvi = calc_ndvi(geom, anio)
+        fc = fc_ambientes(calc_ambientes(geom, img_ver_m, ndvi, num_ambientes))
+    elif tipo.endswith('_perimetro'):
+        fc = ee.FeatureCollection([ee.Feature(geom, {'nombre': nombre or 'campo'})])
+    else:
+        raise ValueError(f'Tipo de descarga desconocido: {tipo}')
+
+    sufijo = tipo.split('_', 1)[1]
+    if tipo.startswith('shp_'):
+        return 'url', fc.getDownloadURL(filetype='SHP', filename=f'{base}_{sufijo}')
+    if tipo.startswith('kmz_'):
+        return 'bytes', (f'{base}_{sufijo}.kmz',
+                         'application/vnd.google-earth.kmz', _kmz_bytes(fc, f'{base}_{sufijo}'))
+    raise ValueError(f'Tipo de descarga desconocido: {tipo}')
 
 
 # ─── Endpoints ────────────────────────────────────────────────────────────────
@@ -528,6 +575,29 @@ def debug_suelos():
         except Exception as e:
             out[nombre] = f'error: {e}'
     return jsonify(out)
+
+
+@app.route('/descargar', methods=['POST'])
+def descargar():
+    """Genera una descarga (GeoTIFF / SHP / KMZ). Recibe el geojson del campo,
+    el tipo y los parámetros del análisis. Devuelve {'url': ...} o el archivo."""
+    tipo   = request.form.get('tipo', '')
+    nombre = request.form.get('nombre', 'campo')
+    try:
+        anio = int(request.form.get('anio', 2024))
+        n    = int(request.form.get('num_ambientes', 4))
+        geom = geojson_a_geometry(request.form['geojson'])
+    except Exception as e:
+        return jsonify({'error': f'Parámetros inválidos: {e}'}), 400
+    try:
+        kind, data = generar_descarga(tipo, geom, anio, n, nombre)
+    except Exception as e:
+        return jsonify({'error': f'No se pudo generar la descarga: {e}'}), 500
+    if kind == 'url':
+        return jsonify({'url': data})
+    archivo, mime, datos = data
+    return Response(datos, mimetype=mime,
+                    headers={'Content-Disposition': f'attachment; filename="{archivo}"'})
 
 
 @app.route('/analizar', methods=['POST'])
