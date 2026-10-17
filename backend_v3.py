@@ -184,10 +184,18 @@ def enmascarar_nubes(img):
 
 
 def get_thumb_url(image, region, vis_params):
-    """Genera URL de miniatura JPG 600×600."""
+    """Genera URL de miniatura JPG 600×600.
+    region puede ser ee.Geometry o dict GeoJSON — se convierte a dict para getThumbURL.
+    """
+    # getThumbURL acepta GeoJSON dict o ee.Geometry serializada
+    # Para evitar que GEE haga zoom raro, pasamos las coordenadas explícitas
+    if hasattr(region, 'getInfo'):
+        region_param = region.bounds().getInfo()  # dict GeoJSON del bounding box
+    else:
+        region_param = region
     return image.getThumbURL({
         'dimensions': '600x600',
-        'region':     region,
+        'region':     region_param,
         'format':     'jpg',
         **vis_params
     })
@@ -256,8 +264,13 @@ def analizar_lote(geom: ee.Geometry, num_ambientes: int = 4, anio: int = 2024) -
         count_raw = s2_raw_all.size().getInfo()
         if count_raw > 0:
             return s2_raw_all.map(lambda img: img.divide(10000)).median().clip(geom), target_anio
-        # Si absolutamente no hay nada, imagen vacía
-        return ee.Image(0).rename('B4').addBands(ee.Image(0).rename('B3')).addBands(ee.Image(0).rename('B2')).clip(geom), target_anio
+        # Si absolutamente no hay nada, imagen vacía con todas las bandas necesarias
+        return (ee.Image(0).rename('B8')
+                .addBands(ee.Image(0).rename('B4'))
+                .addBands(ee.Image(0).rename('B12'))
+                .addBands(ee.Image(0).rename('B3'))
+                .addBands(ee.Image(0).rename('B2'))
+                .clip(geom)), target_anio
 
     # Verano: diciembre–febrero (cruce de año)
     img_ver, anio_ver_real = get_best_seasonal(s2, anio, 12, 2)
@@ -363,7 +376,7 @@ def analizar_lote(geom: ee.Geometry, num_ambientes: int = 4, anio: int = 2024) -
     elev_max = elev_stats.get('elevation_max', 100) or 100
 
     # ── Generar miniaturas ────────────────────────────────────────────────────
-    rgb_vis  = {'bands': ['B4', 'B3', 'B2'], 'min': 0.0, 'max': 0.3}
+    rgb_vis  = {'bands': ['B8', 'B4', 'B12'], 'min': 0.0, 'max': 0.5}  # falso color NIR-R-SWIR
     ndvi_vis = {'palette': ['#d73027','#f46d43','#fdae61','#fee08b',
                              '#d9ef8b','#a6d96a','#66bd63','#1a9850'],
                 'min': 0.0, 'max': 0.8}
@@ -410,7 +423,20 @@ def analizar_lote(geom: ee.Geometry, num_ambientes: int = 4, anio: int = 2024) -
                           'ndvi_promedio': round(ndvi_g, 3) if ndvi_g else None})
 
     # ── Tabla de suelos ───────────────────────────────────────────────────────
-    sue_props = suelos_fc.toList(200).getInfo()
+    # Leer features crudos del asset (sin normalizar) para tener todas las propiedades reales
+    if 'córdoba' in prov_lower or 'cordoba' in prov_lower:
+        raw_sue_fc = ee.FeatureCollection(ASSET_CBA).filterBounds(geom)
+    elif 'santa fe' in prov_lower:
+        raw_sue_fc = ee.FeatureCollection(ASSET_SF).filterBounds(geom)
+    else:
+        raw_sue_fc = ee.FeatureCollection(ASSET_BA).filterBounds(geom)
+
+    if raw_sue_fc.size().getInfo() == 0:
+        raw_sue_fc = (ee.FeatureCollection(ASSET_BA).filterBounds(geom)
+                      .merge(ee.FeatureCollection(ASSET_CBA).filterBounds(geom))
+                      .merge(ee.FeatureCollection(ASSET_SF).filterBounds(geom)))
+
+    sue_props = raw_sue_fc.toList(200).getInfo()
     # Debug: loguear propiedades del primer feature para verificar nombres de campos
     if sue_props:
         first_props = sue_props[0].get('properties', {})
@@ -418,16 +444,20 @@ def analizar_lote(geom: ee.Geometry, num_ambientes: int = 4, anio: int = 2024) -
         print(f'[DEBUG] Suelos first feature: {first_props}')
     suelos    = []
     seen      = set()
+
+    def _get_prop(props, *keys):
+        """Busca la primera clave no-vacía entre las dadas."""
+        for k in keys:
+            v = props.get(k)
+            if v is not None and str(v).strip() not in ('', 'None', 'null'):
+                return str(v).strip()
+        return '—'
+
     for feat in sue_props:
         props = feat.get('properties', {})
-        # Buscar símbolo en todas las variantes posibles de nombres de campo
-        sim = str(props.get('simbolo') or props.get('SIMBOLO') or props.get('Simbolo') or
-                  props.get('symbol') or props.get('SYMBOL') or props.get('SIM') or '—')
-        nom = str(props.get('nombre')  or props.get('NOMBRE')  or props.get('Nombre') or
-                  props.get('name')    or props.get('NAME')    or props.get('NOM') or '—')
-        cls = str(props.get('clase')   or props.get('CLASE')   or props.get('Clase') or
-                  props.get('CLASE_CAP') or props.get('clase_cap') or
-                  props.get('cap')     or props.get('CAP') or '—')
+        sim = _get_prop(props, 'SIMBOLO','simbolo','Simbolo','SYMBOL','symbol','SIM','sim','SIMB','simb','COD','cod')
+        nom = _get_prop(props, 'NOMBRE','nombre','Nombre','NAME','name','NOM','nom','DESCRIPCION','descripcion','DESC','desc')
+        cls = _get_prop(props, 'CLASE','clase','Clase','CLASE_CAP','clase_cap','CAP','cap','CAPACIDAD','capacidad','CLAS','clas')
         if sim in seen:
             continue
         seen.add(sim)
