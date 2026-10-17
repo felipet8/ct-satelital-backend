@@ -504,15 +504,102 @@ def _url_raster(img, geom, scale_base, nbandas, nombre):
         'crs': 'EPSG:4326', 'format': 'GEO_TIFF'})
 
 
+def _descargar_bytes(url):
+    import urllib.request
+    return urllib.request.urlopen(url, timeout=90).read()
+
+
+def _kml_contorno(gj, nombre):
+    """KML propio: polígonos con contorno blanco y SIN relleno."""
+    from xml.sax.saxutils import escape
+
+    def ring(c):
+        return ' '.join(f'{p[0]},{p[1]},0' for p in c)
+
+    def poly(coords):
+        out = '<Polygon><outerBoundaryIs><LinearRing><coordinates>' + ring(coords[0]) + \
+              '</coordinates></LinearRing></outerBoundaryIs>'
+        for h in coords[1:]:
+            out += '<innerBoundaryIs><LinearRing><coordinates>' + ring(h) + \
+                   '</coordinates></LinearRing></innerBoundaryIs>'
+        return out + '</Polygon>'
+
+    def geom(g):
+        t = (g or {}).get('type')
+        if t == 'Polygon':
+            return poly(g['coordinates'])
+        if t == 'MultiPolygon':
+            return '<MultiGeometry>' + ''.join(poly(p) for p in g['coordinates']) + '</MultiGeometry>'
+        if t == 'GeometryCollection':
+            inner = ''.join(geom(x) for x in g['geometries'])
+            return '<MultiGeometry>' + inner + '</MultiGeometry>' if inner else ''
+        return ''
+
+    marcas = []
+    for f in gj.get('features', []):
+        g = geom(f.get('geometry'))
+        if not g:
+            continue
+        props = f.get('properties') or {}
+        nom = next((str(props[k]) for k in ('ambiente', 'simbolo', 'nombre') if props.get(k)), nombre)
+        desc = ''.join(f'<b>{escape(str(k))}</b>: {escape(str(v))}<br/>'
+                       for k, v in props.items() if v is not None)
+        marcas.append(f'<Placemark><name>{escape(nom)}</name>'
+                      f'<description><![CDATA[{desc}]]></description>'
+                      f'<styleUrl>#contorno</styleUrl>{g}</Placemark>')
+    return ('<?xml version="1.0" encoding="UTF-8"?>'
+            '<kml xmlns="http://www.opengis.net/kml/2.2"><Document>'
+            f'<name>{escape(nombre)}</name>'
+            '<Style id="contorno"><LineStyle><color>ffffffff</color><width>2</width></LineStyle>'
+            '<PolyStyle><fill>0</fill><outline>1</outline></PolyStyle></Style>'
+            + ''.join(marcas) + '</Document></kml>')
+
+
 def _kmz_bytes(fc, nombre):
-    """Baja el KML de GEE y lo empaqueta como KMZ."""
-    import io, urllib.request
-    url = fc.getDownloadURL(filetype='KML', filename=nombre)
-    kml = urllib.request.urlopen(url, timeout=60).read()
+    """Descarga las geometrías de GEE y arma un KMZ con contorno blanco sin relleno."""
+    import io
+    gj = json.loads(_descargar_bytes(fc.getDownloadURL(filetype='geojson', filename=nombre)))
+    kml = _kml_contorno(gj, nombre)
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr('doc.kml', kml)
+        zf.writestr('doc.kml', kml.encode('utf-8'))
     return buf.getvalue()
+
+
+QML_CONTORNO = """<!DOCTYPE qgis PUBLIC 'http://mrcc.com/qgis.dtd' 'SYSTEM'>
+<qgis version="3.28.0" styleCategories="Symbology">
+ <renderer-v2 type="singleSymbol" symbollevels="0" forceraster="0" enableorderby="0">
+  <symbols>
+   <symbol type="fill" name="0" alpha="1" clip_to_extent="1" force_rhr="0">
+    <layer class="SimpleFill" enabled="1" locked="0" pass="0">
+     <Option type="Map">
+      <Option name="color" value="255,255,255,0" type="QString"/>
+      <Option name="style" value="no" type="QString"/>
+      <Option name="outline_color" value="255,255,255,255" type="QString"/>
+      <Option name="outline_style" value="solid" type="QString"/>
+      <Option name="outline_width" value="0.6" type="QString"/>
+      <Option name="outline_width_unit" value="MM" type="QString"/>
+     </Option>
+    </layer>
+   </symbol>
+  </symbols>
+ </renderer-v2>
+</qgis>
+"""
+
+
+def _shp_zip_con_estilo(fc, nombre):
+    """Baja el Shapefile (.zip) de GEE y le agrega un .qml (QGIS): contorno blanco, sin relleno."""
+    import io
+    datos = _descargar_bytes(fc.getDownloadURL(filetype='SHP', filename=nombre))
+    zin = zipfile.ZipFile(io.BytesIO(datos))
+    stem = next((n[:-4] for n in zin.namelist() if n.lower().endswith('.shp')), nombre)
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as zout:
+        for n in zin.namelist():
+            zout.writestr(n, zin.read(n))
+        zout.writestr(f'{stem}.qml', QML_CONTORNO)
+    return out.getvalue()
 
 
 def generar_descarga(tipo, geom, anio, num_ambientes, nombre):
