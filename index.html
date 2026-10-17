@@ -464,7 +464,7 @@ textarea { resize: vertical; min-height: 72px; }
   font-size: 24px; color: var(--fg-3);
   cursor: zoom-in; overflow: hidden;
 }
-.map-tile-img img { width: 100%; height: 100%; object-fit: cover; }
+.map-tile-img img { width: 100%; height: 100%; object-fit: contain; }
 .map-tile-lbl {
   padding: 8px 10px;
   font-family: 'Montserrat', sans-serif;
@@ -718,11 +718,7 @@ tr:last-child td { border-bottom: none; }
         </div>
         <div class="field-group">
           <label class="field-label">Año de referencia</label>
-          <select id="f-anio">
-            <option value="2024" selected>2024</option>
-            <option value="2023">2023</option>
-            <option value="2022">2022</option>
-          </select>
+          <select id="f-anio"></select>
         </div>
       </div>
 
@@ -817,11 +813,11 @@ tr:last-child td { border-bottom: none; }
       <div class="maps-scroll">
         <div class="map-tile">
           <div class="map-tile-img" id="tw-ver">🌿</div>
-          <div class="map-tile-lbl">Verano <span id="anio-ver">2024</span></div>
+          <div class="map-tile-lbl">Verano FC <span id="anio-ver">2024</span></div>
         </div>
         <div class="map-tile">
           <div class="map-tile-img" id="tw-inv">❄️</div>
-          <div class="map-tile-lbl">Invierno <span id="anio-inv">2024</span></div>
+          <div class="map-tile-lbl">Invierno FC <span id="anio-inv">2024</span></div>
         </div>
       </div>
 
@@ -902,6 +898,24 @@ let map, resultData;
 
 /* ─── DB en localStorage ─────────────────────────────────── */
 const DB_KEY = 'ct-campos-v1';
+/* Selector de año: desde el año actual hasta 2017 (inicio de Sentinel-2 SR) */
+(function(){
+  const sel = document.getElementById('f-anio');
+  const actual = new Date().getFullYear();
+  for (let y = actual; y >= 2017; y--) {
+    const o = document.createElement('option');
+    o.value = y; o.textContent = y;
+    if (y === actual) o.selected = true;
+    sel.appendChild(o);
+  }
+})();
+
+function fmtFechaImg(iso) {
+  if (!iso) return '';
+  const d = new Date(iso + 'T12:00:00');
+  return d.toLocaleDateString('es-AR', { day:'2-digit', month:'short', year:'numeric' });
+}
+
 function dbRead()   { try { return JSON.parse(localStorage.getItem(DB_KEY) || '[]'); } catch { return []; } }
 function dbWrite(d) { try { localStorage.setItem(DB_KEY, JSON.stringify(d)); } catch {} }
 function dbSave(campo) {
@@ -1212,7 +1226,9 @@ async function iniciarAnalisis() {
       url_topografia: data.url_topografia,
       anio_verano:   data.anio_verano,
       anio_invierno: data.anio_invierno,
-      thumb:         data.url_ndvi || data.url_verano || null,
+      fecha_verano:   data.fecha_verano,
+      fecha_invierno: data.fecha_invierno,
+      thumb:        data.url_ndvi || data.url_verano || null,
     });
 
     mostrarResultado(campo);
@@ -1243,8 +1259,8 @@ function mostrarResultado(campo) {
     ? Math.round(campo.superficie).toLocaleString('es-AR') : (campo.sup || '—');
   document.getElementById('res-topbar-sub').textContent = campo.partido || 'Análisis completado';
   document.getElementById('footer-fecha').textContent   = fecha;
-  document.getElementById('anio-ver').textContent = campo.anio_verano || campo.anio || '2024';
-  document.getElementById('anio-inv').textContent = campo.anio_invierno || campo.anio || '2024';
+  document.getElementById('anio-ver').textContent = fmtFechaImg(campo.fecha_verano)   || campo.anio_verano   || campo.anio || '';
+  document.getElementById('anio-inv').textContent = fmtFechaImg(campo.fecha_invierno) || campo.anio_invierno || campo.anio || '';
 
   document.getElementById('s-ndvi').textContent = campo.ndvi
     ? parseFloat(campo.ndvi).toFixed(3) : '—';
@@ -1376,7 +1392,7 @@ function exportarPDF() {
   const sup  = d.superficie ? Math.round(d.superficie).toLocaleString('es-AR') : (d.sup || '—');
 
   const imgFn = (url, emoji, label) => url
-    ? `<div class="map-box"><img src="${url}" alt="${label}" style="width:100%;aspect-ratio:4/3;object-fit:cover;display:block;"><div class="ml">${label}</div></div>`
+    ? `<div class="map-box"><img src="${url}" alt="${label}" style="width:100%;aspect-ratio:4/3;object-fit:contain;background:#eef1ea;display:block;"><div class="ml">${label}</div></div>`
     : `<div class="map-box"><div class="map-empty">Sin imagen disponible</div><div class="ml">${label}</div></div>`;
 
   const ambRows = (d.ambientes||[]).map((a,i) => {
@@ -1487,7 +1503,7 @@ h2{
 /* Mapas */
 .map-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:22px;}
 .map-box{border-radius:8px;overflow:hidden;border:1px solid #D5DDD0;box-shadow:0 1px 4px rgba(0,0,0,.07);}
-.map-box img{width:100%;aspect-ratio:4/3;object-fit:cover;display:block;}
+.map-box img{width:100%;aspect-ratio:4/3;object-fit:contain;background:#eef1ea;display:block;}
 .ml{
   font-family:'Montserrat',sans-serif;font-size:9.5px;font-weight:700;letter-spacing:.5px;
   text-transform:uppercase;color:#4A4F45;padding:7px 10px;
@@ -1595,8 +1611,8 @@ ${(d.desc || d.partido || d.propietario) ? `
 
 <h2>Imágenes Satelitales Sentinel-2 — ${d.anio||2024}</h2>
 <div class="map-grid">
-  ${imgFn(d.url_verano,   '🌿','Verano (Dic–Feb)')}
-  ${imgFn(d.url_invierno, '❄️','Invierno (Jun–Ago)')}
+  ${imgFn(d.url_verano,   '🌿','Verano FC · ' + (fmtFechaImg(d.fecha_verano)   || d.anio_verano   || '') + ' · B8-B4-B12')}
+  ${imgFn(d.url_invierno, '❄️','Invierno FC · ' + (fmtFechaImg(d.fecha_invierno) || d.anio_invierno || '') + ' · B8-B4-B12')}
 </div>
 
 <h2>NDVI y Ambientes Homogéneos</h2>
@@ -1634,49 +1650,24 @@ ${fotoImgs ? `<h2>Fotos del Campo</h2><div class="fotos">${fotoImgs}</div>` : ''
 
 </div></body></html>`;
 
-  // 1) Intentar window.open con document.write
-  let opened = false;
-  try {
-    const w = window.open('', '_blank');
-    if (w && !w.closed) {
-      w.document.open();
-      w.document.write(html);
-      w.document.close();
-      opened = true;
-    }
-  } catch(e) {}
-
-  if (!opened) {
-    // 2) Intentar abrir como data: URI en nueva pestaña
-    try {
-      const encoded = 'data:text/html;charset=utf-8,' + encodeURIComponent(html);
-      const a = document.createElement('a');
-      a.href = encoded;
-      a.target = '_blank';
-      a.rel = 'noopener';
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      opened = true;
-    } catch(e) {}
-  }
-
-  if (!opened) {
-    // 3) Fallback final: blob download
-    try {
-      const blob = new Blob([html], {type: 'text/html;charset=utf-8'});
-      const url  = URL.createObjectURL(blob);
-      const a    = document.createElement('a');
-      a.href     = url;
-      a.download = 'CT-Informe.html';
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      setTimeout(() => URL.revokeObjectURL(url), 5000);
-      showToast('Informe descargado — abrilo en el navegador e imprimí como PDF');
-    } catch(e) {
-      showToast('No se pudo generar el PDF. Probá desde el navegador Chrome.');
-    }
+  // Crear blob URL y abrir en nueva pestaña (permite Imprimir → Guardar como PDF)
+  const blob    = new Blob([html], {type: 'text/html;charset=utf-8'});
+  const blobUrl = URL.createObjectURL(blob);
+  const w = window.open(blobUrl, '_blank');
+  if (w) {
+    // Limpiar la URL del blob cuando se cierre (5 min de gracia)
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 300000);
+    showToast('Se abrió el informe — usá Ctrl+P para guardar como PDF');
+  } else {
+    // Popup bloqueado: ofrecer descarga directa del HTML
+    const a    = document.createElement('a');
+    a.href     = blobUrl;
+    a.download = `CT_${(d.nombre||'campo').replace(/[^a-zA-Z0-9]/g,'_')}.html`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
+    showToast('Informe descargado — abrilo y usá Ctrl+P → Guardar como PDF');
   }
 }
 

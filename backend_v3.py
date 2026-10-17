@@ -180,7 +180,9 @@ def enmascarar_nubes(img):
     scl = img.select('SCL')
     # Excluir: 3=sombra nube, 8=nube media, 9=nube alta, 10=cirrus
     bad_mask = scl.eq(3).Or(scl.eq(8)).Or(scl.eq(9)).Or(scl.eq(10))
-    return img.updateMask(bad_mask.Not()).divide(10000)
+    # copyProperties: divide() borra system:time_start y rompe los filtros por fecha
+    return (img.updateMask(bad_mask.Not()).divide(10000)
+            .copyProperties(img, ['system:time_start', 'CLOUDY_PIXEL_PERCENTAGE']))
 
 
 def get_thumb_url(image, region, vis_params):
@@ -232,51 +234,44 @@ def analizar_lote(geom: ee.Geometry, num_ambientes: int = 4, anio: int = 2024) -
     region_bounds = geom  # usar el polígono exacto, no el bounding box rectangular
 
     # ── Sentinel-2 SR Harmonized ──────────────────────────────────────────────
-    # Colección sin enmascarar para contar imágenes disponibles
-    # Filtro amplio para no descartar demasiadas escenas (la máscara SCL se encarga del detalle)
-    s2_raw = (ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
-              .filterBounds(geom)
-              .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 80)))
-    s2 = s2_raw.map(enmascarar_nubes)
+    S2 = 'COPERNICUS/S2_SR_HARMONIZED'
+    hoy = datetime.utcnow()
 
-    def get_best_seasonal(s2_col, target_anio, months_start, months_end, fallback_years=4):
-        """Devuelve la mejor imagen estacional, con fallback a años anteriores si no hay datos."""
+    def get_best_seasonal(target_anio, tipo, fallback_years=5):
+        """Elige UNA imagen real (la de menor nubosidad) de la estación pedida.
+        tipo='verano': dic(año-1)–feb(año) | tipo='invierno': jun–ago(año).
+        Si no hay imágenes ese año, retrocede a años anteriores.
+        Devuelve (imagen_para_mostrar, imagen_enmascarada, año_real, fecha 'YYYY-MM-DD')."""
         for offset in range(fallback_years + 1):
             yr = target_anio - offset
-            if months_start <= months_end:
-                col = (s2_col.filter(ee.Filter.calendarRange(yr, yr, 'year'))
-                             .filter(ee.Filter.calendarRange(months_start, months_end, 'month')))
+            if tipo == 'verano':
+                ini, fin = f'{yr-1}-12-01', f'{yr}-03-01'
             else:
-                # Rango que cruza año (ej: dic-feb)
-                col = (s2_col.filter(ee.Filter.calendarRange(yr - 1, yr, 'year'))
-                             .filter(ee.Filter.calendarRange(months_start, 12, 'month'))
-                       .merge(
-                           s2_col.filter(ee.Filter.calendarRange(yr, yr, 'year'))
-                                 .filter(ee.Filter.calendarRange(1, months_end, 'month'))
-                       ))
-            count = col.size().getInfo()
-            if count > 0:
-                return col.median().clip(geom), yr
-        # Fallback final: cualquier imagen de los últimos 5 años SIN máscara de nubes
-        s2_raw_all = (ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
-                      .filterBounds(geom)
-                      .filterDate(f'{target_anio - 4}-01-01', f'{target_anio}-12-31'))
-        count_raw = s2_raw_all.size().getInfo()
-        if count_raw > 0:
-            return s2_raw_all.map(lambda img: img.divide(10000)).median().clip(geom), target_anio
-        # Si absolutamente no hay nada, imagen vacía con todas las bandas necesarias
-        return (ee.Image(0).rename('B8')
-                .addBands(ee.Image(0).rename('B4'))
-                .addBands(ee.Image(0).rename('B12'))
-                .addBands(ee.Image(0).rename('B3'))
-                .addBands(ee.Image(0).rename('B2'))
-                .clip(geom)), target_anio
+                ini, fin = f'{yr}-06-01', f'{yr}-09-01'
+            if datetime.strptime(ini, '%Y-%m-%d') > hoy:
+                continue  # estación todavía no empezó
+            col = (ee.ImageCollection(S2)
+                   .filterBounds(geom)
+                   .filterDate(ini, fin))
+            # Preferir escenas que cubren todo el campo
+            col_full = col.filter(ee.Filter.contains(leftField='.geo', rightValue=geom))
+            if col_full.size().getInfo() > 0:
+                col = col_full
+            if col.size().getInfo() == 0:
+                continue
+            best = ee.Image(col.sort('CLOUDY_PIXEL_PERCENTAGE').first())
+            fecha = ee.Date(best.get('system:time_start')).format('YYYY-MM-dd').getInfo()
+            display = best.select(['B2','B3','B4','B8','B12']).divide(10000).clip(geom)
+            masked  = enmascarar_nubes(best).select(['B2','B3','B4','B8','B12']).clip(geom)
+            return display, masked, yr, fecha
+        # Si absolutamente no hay nada, imagen vacía
+        vacia = (ee.Image(0).rename('B8').addBands(ee.Image(0).rename('B4'))
+                 .addBands(ee.Image(0).rename('B12')).addBands(ee.Image(0).rename('B3'))
+                 .addBands(ee.Image(0).rename('B2')).clip(geom))
+        return vacia, vacia, target_anio, None
 
-    # Verano: diciembre–febrero (cruce de año)
-    img_ver, anio_ver_real = get_best_seasonal(s2, anio, 12, 2)
-
-    # Invierno: junio–agosto
-    img_inv, anio_inv_real = get_best_seasonal(s2, anio, 6, 8)
+    img_ver, img_ver_m, anio_ver_real, fecha_ver = get_best_seasonal(anio, 'verano')
+    img_inv, img_inv_m, anio_inv_real, fecha_inv = get_best_seasonal(anio, 'invierno')
 
     # ── NDVI multi-año (anio-5 → anio) ────────────────────────────────────────
     anio_ini = anio - 5
@@ -306,7 +301,7 @@ def analizar_lote(geom: ee.Geometry, num_ambientes: int = 4, anio: int = 2024) -
     superficie = area_m2 / 10000.0
 
     # ── Ambientes K-means ─────────────────────────────────────────────────────
-    img_base = img_ver.addBands(img_ndvi_raw)
+    img_base = img_ver_m.addBands(img_ndvi_raw)
     bands    = ['B2', 'B3', 'B4', 'B8', 'NDVI']
     img_clus = img_base.select([b for b in bands if b in img_base.bandNames().getInfo()])
 
@@ -453,14 +448,27 @@ def analizar_lote(geom: ee.Geometry, num_ambientes: int = 4, anio: int = 2024) -
                 return str(v).strip()
         return '—'
 
-    for feat in sue_props:
+    def _fuzzy(props, *frags):
+        """Busca una propiedad cuyo nombre (en minúsculas) contenga alguno de los fragmentos."""
+        for frag in frags:
+            for k, v in props.items():
+                if frag in k.lower() and v is not None and str(v).strip() not in ('', 'None', 'null'):
+                    return str(v).strip()
+        return '—'
+
+    for idx, feat in enumerate(sue_props):
         props = feat.get('properties', {})
         sim = _get_prop(props, 'SIMBOLO','simbolo','Simbolo','SYMBOL','symbol','SIM','sim','SIMB','simb','COD','cod')
+        if sim == '—': sim = _fuzzy(props, 'simb', 'sym', 'cod', 'uc', 'unidad')
         nom = _get_prop(props, 'NOMBRE','nombre','Nombre','NAME','name','NOM','nom','DESCRIPCION','descripcion','DESC','desc')
+        if nom == '—': nom = _fuzzy(props, 'nombre', 'nom', 'desc', 'serie', 'name', 'taxon')
         cls = _get_prop(props, 'CLASE','clase','Clase','CLASE_CAP','clase_cap','CAP','cap','CAPACIDAD','capacidad','CLAS','clas')
-        if sim in seen:
+        if cls == '—': cls = _fuzzy(props, 'clase', 'cap', 'clas', 'ip', 'uso')
+        # Clave de duplicados: si no hay símbolo, no colapsar todo en una sola fila
+        key = sim if sim != '—' else f'{nom}|{cls}|{idx}'
+        if key in seen:
             continue
-        seen.add(sim)
+        seen.add(key)
 
         # Área de intersección
         try:
@@ -493,6 +501,8 @@ def analizar_lote(geom: ee.Geometry, num_ambientes: int = 4, anio: int = 2024) -
         'url_topografia': url_top,
         'ambientes':     ambientes,
         'suelos':        suelos,
+        'fecha_verano':   fecha_ver,
+        'fecha_invierno': fecha_inv,
         'anio_verano':   anio_ver_real,
         'anio_invierno': anio_inv_real,
     }
@@ -503,6 +513,20 @@ def analizar_lote(geom: ee.Geometry, num_ambientes: int = 4, anio: int = 2024) -
 @app.route('/ping')
 def ping():
     return jsonify({'ok': True, 'msg': 'CT Satelital backend v3 activo 🛰️'})
+
+
+@app.route('/debug/suelos')
+def debug_suelos():
+    """Muestra las propiedades reales de los assets INTA (1 feature de cada uno).
+    Abrir en el navegador: <backend>/debug/suelos"""
+    out = {}
+    for nombre, asset in (('BA', ASSET_BA), ('CBA', ASSET_CBA), ('SF', ASSET_SF)):
+        try:
+            f = ee.FeatureCollection(asset).first().getInfo()
+            out[nombre] = f.get('properties', {}) if f else None
+        except Exception as e:
+            out[nombre] = f'error: {e}'
+    return jsonify(out)
 
 
 @app.route('/analizar', methods=['POST'])
