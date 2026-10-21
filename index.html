@@ -524,6 +524,11 @@ tr:last-child td { border-bottom: none; }
   text-align:center; text-decoration:none; display:block; min-width:0; }
 .dl-btn:active { background:var(--bg-panel); }
 .dl-btn:disabled { opacity:.6; cursor:wait; }
+.ge-item { display:grid; grid-template-columns:96px 1fr; gap:10px; margin-bottom:10px; align-items:center; }
+.ge-item img { width:96px; height:72px; object-fit:cover; border-radius:6px; border:1px solid var(--border); }
+.ge-f { display:grid; gap:6px; min-width:0; }
+.ge-f input, .ge-f select { padding:8px; border:1.5px solid var(--border); border-radius:var(--r);
+  background:var(--bg-card); color:var(--fg); font-size:12px; width:100%; min-width:0; }
 .dl-note { font-size:11px; color:var(--fg-3); line-height:1.4; margin-top:4px; }
 .sw { display:inline-block; width:10px; height:10px; border-radius:3px; margin-right:6px; vertical-align:-1px; }
 .btn-sec.accent { background: var(--accent); color: #fff; border-color: var(--accent); }
@@ -904,11 +909,19 @@ tr:last-child td { border-bottom: none; }
           </div>
         </div>
         <div class="dl-group">
-          <div class="dl-group-lbl">Imágenes (JPG)</div>
+          <div class="dl-group-lbl">Imágenes (PNG)</div>
           <div class="dl-grid" id="dl-jpg"></div>
         </div>
         <div class="dl-note">Cada archivo se genera en el momento; los de ambientes pueden tardar hasta un minuto.</div>
       </div>
+
+      <!-- Google Earth -->
+      <div class="sec-title">Imágenes de Google Earth</div>
+      <div class="dl-note" style="margin:0 0 8px;">Subí capturas de Google Earth (con el KMZ de perímetro, ambientes o suelos en contorno blanco). Salen en el PDF con su leyenda al lado.</div>
+      <label class="btn-sec" style="cursor:pointer;margin-bottom:10px;">+ Agregar imágenes
+        <input type="file" accept="image/*" multiple style="display:none" onchange="addGeImages(event)">
+      </label>
+      <div id="ge-list" style="margin-bottom:16px;"></div>
 
       <!-- Fotos -->
       <div id="sec-fotos" style="display:none;">
@@ -924,7 +937,7 @@ tr:last-child td { border-bottom: none; }
           <div class="ct-sub">Inmobiliaria Rural · Mercedes, BA</div>
           <div class="ct-sub" style="margin-top:2px;">Calle 23 N° 524 B · +54 9 11 3258 6146</div>
         </div>
-        <div class="ct-right">CT Satelital<br>Análisis remoto<br><span id="footer-fecha"></span></div>
+        <div class="ct-right">CT Satelital<br>Análisis remoto<br><span id="footer-fecha"></span><br><span style="opacity:.6">v3.4 · 21-oct-2026</span></div>
       </div>
       <div style="height:8px;"></div>
     </div>
@@ -1250,7 +1263,6 @@ async function iniciarAnalisis() {
     if (data.error) throw new Error(data.error);
 
     stopLoading();
-    resultData = data;
 
     // Guardar en DB
     const campo = dbSave({
@@ -1275,11 +1287,15 @@ async function iniciarAnalisis() {
       anio_invierno: data.anio_invierno,
       fecha_verano:   data.fecha_verano,
       fecha_invierno: data.fecha_invierno,
+      elev_min:       data.elev_min,
+      elev_max:       data.elev_max,
       geojson:        data.geojson,
       num_ambientes:  data.num_ambientes,
       thumb:        data.url_ndvi || data.url_verano || null,
     });
 
+    resultData = campo;
+    geImages = []; renderGe();
     mostrarResultado(campo);
     goTo('resultado');
 
@@ -1423,6 +1439,7 @@ function abrirCampo(id) {
   if (!campo) return;
   resultData = campo;
   photoFiles = [];
+  geImages = []; renderGe();
   mostrarResultado(campo);
   goTo('resultado');
 }
@@ -1439,6 +1456,34 @@ function compartirWhatsApp() {
   window.open(url, '_blank');
 }
 
+/* ─── Imágenes de Google Earth ───────────────────────────── */
+let geImages = [];
+function addGeImages(e) {
+  for (const f of e.target.files) {
+    geImages.push({ file: f, url: URL.createObjectURL(f), caption: '', legend: 'none' });
+  }
+  e.target.value = '';
+  renderGe();
+}
+function renderGe() {
+  const el = document.getElementById('ge-list');
+  if (!el) return;
+  el.innerHTML = geImages.map((g, i) => `
+    <div class="ge-item">
+      <img src="${g.url}" alt="">
+      <div class="ge-f">
+        <input type="text" placeholder="Título (ej: Ambientes)" value="${(g.caption||'').replace(/"/g,'&quot;')}"
+               oninput="geImages[${i}].caption=this.value">
+        <select onchange="geImages[${i}].legend=this.value">
+          <option value="none"      ${g.legend==='none'?'selected':''}>Sin leyenda</option>
+          <option value="ambientes" ${g.legend==='ambientes'?'selected':''}>Leyenda: ambientes</option>
+          <option value="suelos"    ${g.legend==='suelos'?'selected':''}>Leyenda: suelos</option>
+        </select>
+        <button class="dl-btn" onclick="geImages.splice(${i},1);renderGe()">Quitar</button>
+      </div>
+    </div>`).join('');
+}
+
 /* ─── Exportar PDF ───────────────────────────────────────── */
 function exportarPDF() {
   if (!resultData) return;
@@ -1448,7 +1493,7 @@ function exportarPDF() {
   const sup  = d.superficie ? Math.round(d.superficie).toLocaleString('es-AR') : (d.sup || '—');
 
   const imgFn = (url, emoji, label) => url
-    ? `<div class="map-box"><img src="${url}" alt="${label}" style="width:100%;aspect-ratio:4/3;object-fit:contain;background:#eef1ea;display:block;"><div class="ml">${label}</div></div>`
+    ? `<div class="map-box"><img src="${url}" alt="${label}" style="width:100%;aspect-ratio:4/3;object-fit:contain;background:#fff;display:block;"><div class="ml">${label}</div></div>`
     : `<div class="map-box"><div class="map-empty">Sin imagen disponible</div><div class="ml">${label}</div></div>`;
 
   const ambRows = (d.ambientes||[]).map((a,i) => {
@@ -1467,6 +1512,60 @@ function exportarPDF() {
     `<img src="${URL.createObjectURL(f)}" style="width:32%;border-radius:6px;aspect-ratio:4/3;object-fit:cover;">`
   ).join('');
 
+  /* ── Leyendas (van al lado de cada imagen) ── */
+  const AMB_COL  = ['#4CAF50','#2196F3','#FF9800','#9C27B0','#F44336','#009688'];
+  const NDVI_PAL = ['#d73027','#f46d43','#fdae61','#fee08b','#d9ef8b','#a6d96a','#66bd63','#1a9850'];
+  const TOPO_PAL = ['#006837','#31a354','#78c679','#c2e699','#ffffcc','#feb24c','#fd8d3c','#f03b20','#bd0026'];
+  const esc = t => String(t == null ? '' : t).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  const legItem = (color, inner) => `<div class="leg-i"><span class="leg-sw" style="background:${color}"></span><div>${inner}</div></div>`;
+  const legBox  = (title, inner, note) => `<div class="leg"><div class="leg-t">${title}</div>${inner}${note ? `<div class="leg-n">${note}</div>` : ''}</div>`;
+  const legBar  = (pal, a, b, c) => `<div class="leg-bar" style="background:linear-gradient(90deg,${pal.join(',')});"></div>
+      <div class="leg-sc"><span>${a}</span>${c ? `<span>${c}</span>` : ''}<span>${b}</span></div>`;
+
+  const legSentinel = (fechaTxt) => legBox('Falso color · B8-B4-B12',
+    legItem('#e0203a','Rojo intenso: vegetación verde y vigorosa') +
+    legItem('#b3589c','Rosado / violeta: vegetación escasa o rastrojo') +
+    legItem('#4a5a9a','Azulado: suelo desnudo') +
+    legItem('#10142e','Negro / azul muy oscuro: agua'),
+    `Imagen Sentinel-2 del ${fechaTxt || '—'}. Infrarrojo cercano (B8) en rojo, rojo (B4) en verde, infrarrojo de onda corta (B12) en azul.`);
+
+  const legNdvi = legBox('NDVI · promedio 5 años',
+    legBar(NDVI_PAL, '0.0', '0.8', '0.4') +
+    `<div style="margin-top:8px;">Promedio del campo: <b>${d.ndvi ? parseFloat(d.ndvi).toFixed(3) : '—'}</b></div>`,
+    'Verde intenso: mayor vigor y cobertura. Naranja / rojo: baja cobertura o suelo desnudo.');
+
+  const legAmb = legBox('Ambientes homogéneos',
+    (d.ambientes || []).map((a, i) => legItem(AMB_COL[i % AMB_COL.length],
+      `<b>A${i+1}</b> · ${(a.hectareas||0).toFixed(1)} ha (${(a.porcentaje||0).toFixed(1)}%)`)).join(''),
+    'Zonas del campo con comportamiento similar (clasificación K-means).');
+
+  const legSue = legBox('Unidades de suelo INTA',
+    (d.suelos || []).slice(0, 8).map(s => legItem(s.color || '#999',
+      `<b>${esc(s.simbolo)}</b> ${esc((s.nombre||'').substring(0, 34))}<br><span style="color:#6B7264">Clase ${esc(s.clase||'—')} · ${(s.hectareas||0).toFixed(1)} ha</span>`)).join(''),
+    'Cartas de suelos INTA 1:50.000.');
+
+  const hayElev = d.elev_min != null && d.elev_max != null;
+  const legTopo = legBox('Elevación',
+    legBar(TOPO_PAL, hayElev ? Math.round(d.elev_min) + ' m' : 'Bajo', hayElev ? Math.round(d.elev_max) + ' m' : 'Alto', ''),
+    'Modelo de elevación SRTM, 30 m.');
+
+  const mapRow = (url, label, leg) => `<div class="map-row">${imgFn(url, '', label)}${leg}</div>`;
+
+  const legGe = (tipo) => {
+    if (tipo === 'ambientes') return legBox('Ambientes',
+      (d.ambientes || []).map((a, i) => legItem('#fff', `<b>A${i+1}</b> · ${(a.hectareas||0).toFixed(1)} ha (${(a.porcentaje||0).toFixed(1)}%)`)).join(''));
+    if (tipo === 'suelos') return legBox('Suelos',
+      (d.suelos || []).slice(0, 8).map(s => legItem('#fff',
+        `<b>${esc(s.simbolo)}</b> ${esc((s.nombre||'').substring(0, 34))}<br><span style="color:#6B7264">Clase ${esc(s.clase||'—')} · ${(s.hectareas||0).toFixed(1)} ha</span>`)).join(''));
+    return '';
+  };
+  const geRows = geImages.map(g => {
+    const leg = legGe(g.legend);
+    return `<div class="map-row${leg ? '' : ' solo'}"><div class="map-box">
+      <img src="${g.url}" alt="" style="width:100%;max-height:380px;object-fit:contain;background:#fff;display:block;">
+      <div class="ml">${esc(g.caption || 'Google Earth')}</div></div>${leg}</div>`;
+  }).join('');
+
   const html = `<!DOCTYPE html><html lang="es"><head>
 <meta charset="UTF-8"><title>Informe CT — ${d.nombre||'Campo'}</title>
 <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=Montserrat:wght@400;500;600;700;800&family=Inter:wght@400;500&display=swap" rel="stylesheet">
@@ -1481,7 +1580,6 @@ body{font-family:'Inter',sans-serif;color:#1C1F1A;background:#fff;font-size:13px
   color:#fff;
   padding:52px 52px 44px;
   position:relative;
-  page-break-after:always;
 }
 .cover-header{
   display:flex;align-items:center;justify-content:space-between;
@@ -1543,7 +1641,7 @@ h2{
   font-family:'Montserrat',sans-serif;font-size:10.5px;font-weight:800;
   color:#2E5C35;letter-spacing:1.2px;text-transform:uppercase;
   padding-bottom:8px;border-bottom:1.5px solid #E8EDE4;
-  margin:28px 0 14px;
+  margin:28px 0 14px;break-after:avoid;page-break-after:avoid;
 }
 
 /* Descripción + ficha técnica lado a lado */
@@ -1556,10 +1654,21 @@ h2{
   color:#6B7264;padding:9px 12px;background:#F5F7F3;}
 .ficha-val{font-size:12px;font-weight:600;color:#1C1F1A;padding:9px 12px;background:#fff;}
 
-/* Mapas */
+/* Mapa + leyenda al lado */
+.map-row{display:grid;grid-template-columns:1.4fr 1fr;gap:14px;align-items:stretch;margin-bottom:16px;
+  break-inside:avoid;page-break-inside:avoid;}
+.map-row.solo{grid-template-columns:1fr;}
+.leg{border:1px solid #D5DDD0;border-radius:8px;padding:12px 14px;background:#fff;font-size:10.5px;color:#3A3F35;}
+.leg-t{font-family:'Montserrat',sans-serif;font-size:9px;font-weight:800;letter-spacing:.8px;
+  text-transform:uppercase;color:#2E5C35;margin-bottom:9px;}
+.leg-i{display:flex;align-items:flex-start;gap:7px;margin-bottom:6px;line-height:1.35;}
+.leg-sw{flex:0 0 12px;height:12px;border-radius:3px;margin-top:1px;border:1px solid rgba(0,0,0,.25);}
+.leg-bar{height:10px;border-radius:5px;margin:4px 0 3px;border:1px solid rgba(0,0,0,.12);}
+.leg-sc{display:flex;justify-content:space-between;font-size:9.5px;color:#6B7264;}
+.leg-n{font-size:9.5px;color:#6B7264;margin-top:9px;line-height:1.4;}
 .map-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:22px;}
 .map-box{border-radius:8px;overflow:hidden;border:1px solid #D5DDD0;box-shadow:0 1px 4px rgba(0,0,0,.07);}
-.map-box img{width:100%;aspect-ratio:4/3;object-fit:contain;background:#eef1ea;display:block;}
+.map-box img{width:100%;aspect-ratio:4/3;object-fit:contain;background:#fff;display:block;}
 .ml{
   font-family:'Montserrat',sans-serif;font-size:9.5px;font-weight:700;letter-spacing:.5px;
   text-transform:uppercase;color:#4A4F45;padding:7px 10px;
@@ -1601,9 +1710,10 @@ tr:nth-child(even) td{background:#F9FBF8;}
 .fs{font-size:10px;opacity:.7;margin-top:2px;}
 .fr{font-size:10px;opacity:.7;text-align:right;flex-shrink:0;line-height:1.6;}
 
+@page{size:A4;margin:10mm;}
 @media print{
   body{-webkit-print-color-adjust:exact;print-color-adjust:exact;}
-  .cover{page-break-after:always;}
+  tr{break-inside:avoid;}
 }
 </style></head><body>
 
@@ -1666,16 +1776,12 @@ ${(d.desc || d.partido || d.propietario) ? `
 </div>` : ''}
 
 <h2>Imágenes Satelitales Sentinel-2 — ${d.anio||2024}</h2>
-<div class="map-grid">
-  ${imgFn(d.url_verano,   '🌿','Verano FC · ' + (fmtFechaImg(d.fecha_verano)   || d.anio_verano   || '') + ' · B8-B4-B12')}
-  ${imgFn(d.url_invierno, '❄️','Invierno FC · ' + (fmtFechaImg(d.fecha_invierno) || d.anio_invierno || '') + ' · B8-B4-B12')}
-</div>
+${mapRow(d.url_verano,   'Verano · ' + (fmtFechaImg(d.fecha_verano)   || d.anio_verano   || ''), legSentinel(fmtFechaImg(d.fecha_verano)))}
+${mapRow(d.url_invierno, 'Invierno · ' + (fmtFechaImg(d.fecha_invierno) || d.anio_invierno || ''), legSentinel(fmtFechaImg(d.fecha_invierno)))}
 
 <h2>NDVI y Ambientes Homogéneos</h2>
-<div class="map-grid">
-  ${imgFn(d.url_ndvi,      '🌱','NDVI — Promedio 5 Años')}
-  ${imgFn(d.url_ambientes, '🗺️','Ambientes K-means')}
-</div>
+${mapRow(d.url_ndvi,      'NDVI — Promedio 5 años', legNdvi)}
+${mapRow(d.url_ambientes, 'Ambientes K-means', legAmb)}
 ${ambRows ? `
 <table>
   <thead><tr><th>Ambiente</th><th>Hectáreas</th><th>% del campo</th><th>NDVI prom.</th></tr></thead>
@@ -1683,15 +1789,15 @@ ${ambRows ? `
 </table>` : ''}
 
 <h2>Suelos INTA y Topografía</h2>
-<div class="map-grid">
-  ${imgFn(d.url_suelos,    '🟤','Suelos INTA 1:50.000')}
-  ${imgFn(d.url_topografia,'⛰️','Topografía SRTM')}
-</div>
+${mapRow(d.url_suelos,    'Suelos INTA 1:50.000', legSue)}
+${mapRow(d.url_topografia,'Topografía SRTM', legTopo)}
 ${sueRows ? `
 <table>
   <thead><tr><th>Unidad</th><th>Descripción</th><th>Clase</th><th>ha</th><th>%</th></tr></thead>
   <tbody>${sueRows}</tbody>
 </table>` : ''}
+
+${geRows ? `<h2>Imágenes Google Earth</h2>${geRows}` : ''}
 
 ${fotoImgs ? `<h2>Fotos del Campo</h2><div class="fotos">${fotoImgs}</div>` : ''}
 
@@ -1786,7 +1892,7 @@ async function descargar(tipo, btn) {
       startUrlDownload(j.url);
     } else {
       const base = (d.nombre || 'campo').replace(/[^a-zA-Z0-9_-]+/g, '_');
-      saveBlob(await resp.blob(), `${base}_${tipo.split('_')[1]}.kmz`);
+      saveBlob(await resp.blob(), `${base}_${tipo.split('_')[1]}.${tipo.startsWith('shp_') ? 'zip' : 'kmz'}`);
     }
     showToast('Descarga iniciada');
   } catch (e) {

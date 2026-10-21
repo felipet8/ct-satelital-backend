@@ -199,9 +199,9 @@ def get_thumb_url(image, region, vis_params):
     else:
         region_param = region
     return image.getThumbURL({
-        'dimensions': '600x600',
+        'dimensions': '700x700',
         'region':     region_param,
-        'format':     'jpg',
+        'format':     'png',   # PNG: fuera del campo queda transparente (fondo blanco en la app/PDF)
         **vis_params
     })
 
@@ -488,6 +488,8 @@ def analizar_lote(geom: ee.Geometry, num_ambientes: int = 4, anio: int = 2024) -
         'anio_verano':   anio_ver_real,
         'anio_invierno': anio_inv_real,
         'num_ambientes': num_ambientes,
+        'elev_min':      round(float(elev_min), 1),
+        'elev_max':      round(float(elev_max), 1),
         'geojson':       geom.getInfo(),   # el frontend lo reenvía para pedir descargas
     }
 
