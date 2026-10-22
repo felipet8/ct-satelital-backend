@@ -199,9 +199,9 @@ def get_thumb_url(image, region, vis_params):
     else:
         region_param = region
     return image.getThumbURL({
-        'dimensions': '700x700',
+        'dimensions': '600x600',
         'region':     region_param,
-        'format':     'png',   # PNG: fuera del campo queda transparente (fondo blanco en la app/PDF)
+        'format':     'jpg',
         **vis_params
     })
 
@@ -317,62 +317,6 @@ def _fuzzy(props, *frags):
     return '—'
 
 
-def _dp(pts, tol):
-    """Douglas-Peucker iterativo (coordenadas en grados)."""
-    n = len(pts)
-    if n < 4:
-        return pts
-    keep = [False] * n
-    keep[0] = keep[-1] = True
-    stack = [(0, n - 1)]
-    while stack:
-        a, b = stack.pop()
-        ax, ay = pts[a]; bx, by = pts[b]
-        dx, dy = bx - ax, by - ay
-        L = dx * dx + dy * dy
-        dmax, idx = 0.0, -1
-        for i in range(a + 1, b):
-            px, py = pts[i]
-            if L == 0:
-                d = ((px - ax) ** 2 + (py - ay) ** 2) ** 0.5
-            else:
-                t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / L))
-                d = ((px - (ax + t * dx)) ** 2 + (py - (ay + t * dy)) ** 2) ** 0.5
-            if d > dmax:
-                dmax, idx = d, i
-        if dmax > tol and idx > 0:
-            keep[idx] = True
-            stack.extend([(a, idx), (idx, b)])
-    return [p for p, k in zip(pts, keep) if k]
-
-
-def _polys_simplificados(g, tol=0.00004):
-    """GeoJSON (Polygon/MultiPolygon/GeometryCollection) -> lista de polígonos [[anillo,...],...]
-    simplificados (~4 m) y con coordenadas redondeadas."""
-    t = (g or {}).get('type')
-    if t == 'Polygon':
-        crudos = [g['coordinates']]
-    elif t == 'MultiPolygon':
-        crudos = g['coordinates']
-    elif t == 'GeometryCollection':
-        crudos = []
-        for sub in g.get('geometries', []):
-            crudos.extend(_polys_simplificados(sub, tol))
-        return crudos
-    else:
-        return []
-    out = []
-    for poly in crudos:
-        anillos = []
-        for ring in poly:
-            r = _dp([(p[0], p[1]) for p in ring], tol)
-            if len(r) >= 4:
-                anillos.append([[round(x, 5), round(y, 5)] for x, y in r])
-        if anillos:
-            out.append(anillos)
-    return out
-
-
 def procesar_suelos(geom, superficie):
     """Suelos INTA dentro del campo.
     Devuelve (lista_para_tabla, ee.FeatureCollection con propiedades normalizadas e 'idx')."""
@@ -398,7 +342,6 @@ def procesar_suelos(geom, superficie):
         print(f"[DEBUG] Suelos props: {feats[0].get('properties', {})}")
 
     grupos = {}
-    poligonos_raw = []   # (clave, ha, geometry) para la lámina
     for i, feat in enumerate(feats):
         props = feat.get('properties', {})
         ha = props.get('_ha') or 0
@@ -414,14 +357,9 @@ def procesar_suelos(geom, superficie):
         g = grupos.setdefault(key, {'simbolo': sim, 'nombre': nom, 'clase': cls, 'ha': 0.0, 'geoms': []})
         g['ha'] += ha
         g['geoms'].append(feat['geometry'])
-        if not g.get('attrs'):
-            g['attrs'] = {k: v for k, v in props.items()
-                          if not k.startswith('_') and v not in (None, '') and isinstance(v, (str, int, float))}
-        poligonos_raw.append((key, ha, feat['geometry']))
 
     orden = sorted(grupos.values(), key=lambda x: x['ha'], reverse=True)
     suelos, ee_feats = [], []
-    idx_por_clave = {}
     for idx, g in enumerate(orden):
         color = SUELO_COLORS[idx % len(SUELO_COLORS)]
         suelos.append({
@@ -431,9 +369,7 @@ def procesar_suelos(geom, superficie):
             'hectareas':  round(g['ha'], 1),
             'porcentaje': round((g['ha'] / superficie) * 100, 1),
             'color':      color,
-            'atributos':  dict(list((g.get('attrs') or {}).items())[:14]),
         })
-        idx_por_clave[next(k for k, v in grupos.items() if v is g)] = idx
         for gj in g['geoms']:
             try:
                 ee_feats.append(ee.Feature(ee.Geometry(gj), {
@@ -441,16 +377,7 @@ def procesar_suelos(geom, superficie):
                     'clase': g['clase'], 'ha': round(g['ha'], 2), 'idx': idx}))
             except Exception as e:
                 print(f'[WARN] geometría de suelo omitida: {e}')
-    poligonos = []
-    for clave, ha, gj in poligonos_raw:
-        if ha < 0.3 or clave not in idx_por_clave:
-            continue
-        i = idx_por_clave[clave]
-        polys = _polys_simplificados(gj)
-        if polys:
-            poligonos.append({'ha': round(ha, 1), 'simbolo': suelos[i]['simbolo'],
-                              'color': suelos[i]['color'], 'poly': polys})
-    return suelos, ee.FeatureCollection(ee_feats), poligonos
+    return suelos, ee.FeatureCollection(ee_feats)
 
 
 def imagen_suelos(fc, geom, n):
@@ -494,7 +421,7 @@ def analizar_lote(geom: ee.Geometry, num_ambientes: int = 4, anio: int = 2024) -
 
     img_amb = calc_ambientes(geom, img_ver_m, img_ndvi_raw, num_ambientes)
 
-    suelos, suelos_fc, suelos_poligonos = procesar_suelos(geom, superficie)
+    suelos, suelos_fc = procesar_suelos(geom, superficie)
     suelos_img, sue_vis = imagen_suelos(suelos_fc, geom, len(suelos))
 
     # ── Topografía SRTM ───────────────────────────────────────────────────────
@@ -561,50 +488,8 @@ def analizar_lote(geom: ee.Geometry, num_ambientes: int = 4, anio: int = 2024) -
         'anio_verano':   anio_ver_real,
         'anio_invierno': anio_inv_real,
         'num_ambientes': num_ambientes,
-        'suelos_poligonos': suelos_poligonos,
-        'elev_min':      round(float(elev_min), 1),
-        'elev_max':      round(float(elev_max), 1),
         'geojson':       geom.getInfo(),   # el frontend lo reenvía para pedir descargas
     }
-
-
-# ─── Imagen Sentinel-2 de una fecha elegida ───────────────────────────────────
-def imagen_por_fecha(geom, fecha, modo='falso', dims=1000, margen=0.12, ventana=12):
-    """Miniatura (JPG, sin recortar) de la imagen Sentinel-2 más cercana a `fecha`
-    (±ventana días, preferentemente con poca nubosidad), con un margen alrededor del campo."""
-    d0 = ee.Date(fecha)
-    anillo = geom.bounds(1).getInfo()['coordinates'][0]
-    xs = [p[0] for p in anillo]; ys = [p[1] for p in anillo]
-    w, e, s_, n = min(xs), max(xs), min(ys), max(ys)
-    mx, my = (e - w) * margen, (n - s_) * margen
-    bbox = [w - mx, s_ - my, e + mx, n + my]
-    region = ee.Geometry.Rectangle(bbox, 'EPSG:4326', False)
-
-    def coleccion(asset):
-        col = (ee.ImageCollection(asset).filterBounds(geom)
-               .filterDate(d0.advance(-ventana, 'day'), d0.advance(ventana + 1, 'day')))
-        full = col.filter(ee.Filter.contains(leftField='.geo', rightValue=geom))
-        return full if full.size().getInfo() > 0 else col
-
-    col, fuente = coleccion(S2), 'SR'
-    if col.size().getInfo() == 0:
-        col, fuente = coleccion('COPERNICUS/S2_HARMONIZED'), 'TOA'   # reflectancia TOA (antes de 2019)
-    if col.size().getInfo() == 0:
-        raise ValueError(f'No hay imágenes Sentinel-2 a ±{ventana} días de {fecha}. Probá otra fecha.')
-    claras = col.filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 60))
-    if claras.size().getInfo() > 0:
-        col = claras
-    col = col.map(lambda i: i.set('dd', ee.Number(i.date().difference(d0, 'day')).abs()))
-    best = ee.Image(col.sort('dd').first())
-    fecha_real = ee.Date(best.get('system:time_start')).format('YYYY-MM-dd').getInfo()
-
-    if modo == 'real':
-        vis = {'bands': ['B4', 'B3', 'B2'], 'min': 0.0, 'max': 0.3}
-    else:
-        vis = {'bands': ['B8', 'B4', 'B12'], 'min': 0.0, 'max': 0.5}
-    img = best.select(['B2', 'B3', 'B4', 'B8', 'B12']).divide(10000)
-    url = img.getThumbURL({'dimensions': dims, 'region': region.getInfo(), 'format': 'jpg', **vis})
-    return {'url': url, 'fecha': fecha_real, 'bbox': bbox, 'fuente': fuente, 'modo': modo}
 
 
 # ─── Descargas (GeoTIFF, Shapefile, KMZ) ──────────────────────────────────────
@@ -739,7 +624,7 @@ def generar_descarga(tipo, geom, anio, num_ambientes, nombre):
 
     # Vectores
     if tipo.endswith('_suelos'):
-        _, fc, _ = procesar_suelos(geom, geom.area(1).getInfo() / 10000.0)
+        _, fc = procesar_suelos(geom, geom.area(1).getInfo() / 10000.0)
     elif tipo.endswith('_ambientes'):
         _, img_ver_m, _, _ = get_best_seasonal(geom, anio, 'verano')
         _, ndvi = calc_ndvi(geom, anio)
@@ -777,23 +662,6 @@ def debug_suelos():
         except Exception as e:
             out[nombre] = f'error: {e}'
     return jsonify(out)
-
-
-@app.route('/imagen', methods=['POST'])
-def imagen():
-    """Imagen Sentinel-2 de una fecha elegida (con margen alrededor del campo)."""
-    try:
-        geom  = geojson_a_geometry(request.form['geojson'])
-        fecha = request.form['fecha']
-        datetime.strptime(fecha, '%Y-%m-%d')
-        modo  = request.form.get('modo', 'falso')
-        dims  = max(300, min(int(request.form.get('dims', 1000)), 2000))
-    except Exception as e:
-        return jsonify({'error': f'Parámetros inválidos: {e}'}), 400
-    try:
-        return jsonify(imagen_por_fecha(geom, fecha, modo, dims))
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/descargar', methods=['POST'])
