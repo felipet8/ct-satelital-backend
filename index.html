@@ -529,6 +529,8 @@ tr:last-child td { border-bottom: none; }
 .ge-f { display:grid; gap:6px; min-width:0; }
 .ge-f input, .ge-f select, .ref-form input, .ref-form select, .ed-box input, .ed-box textarea { padding:8px; border:1.5px solid var(--border); border-radius:var(--r);
   background:var(--bg-card); color:var(--fg); font-size:12px; width:100%; min-width:0; font-family:inherit; }
+.amb-name { margin-left:6px; padding:5px 8px; border:1px solid var(--border); border-radius:8px; background:var(--bg-card);
+  color:var(--fg); font-size:12px; width:170px; max-width:60%; font-family:inherit; vertical-align:middle; }
 .ed-box { border:1px solid var(--border); border-radius:var(--r); padding:10px; margin-bottom:8px; background:var(--bg-card); display:grid; gap:6px; }
 .ed-h { font-size:12px; color:var(--fg); }
 .ed-mut { font-size:10.5px; color:var(--fg-3); line-height:1.35; word-break:break-word; }
@@ -716,8 +718,12 @@ tr:last-child td { border-bottom: none; }
             <input type="number" id="f-sup" placeholder="ha" min="0">
           </div>
           <div class="field-group">
-            <label class="field-label">Precio pedido</label>
-            <input type="text" id="f-precio" placeholder="USD/ha">
+            <label class="field-label">Precio pedido (USD)</label>
+            <input type="text" id="f-precio" inputmode="decimal" placeholder="Ej: 2500000">
+            <select id="f-precio-tipo" style="margin-top:6px;">
+              <option value="total">Total</option>
+              <option value="ha">Por hectárea</option>
+            </select>
           </div>
         </div>
         <div class="field-group">
@@ -868,6 +874,7 @@ tr:last-child td { border-bottom: none; }
 
       <!-- Tabla ambientes -->
       <div class="sec-title">Tabla de ambientes</div>
+      <div class="dl-note" style="margin:0 0 8px;">Escribí el nombre de cada ambiente en la tabla (ej: Ganadero superior). Si repetís un nombre, se agrupan en el PDF.</div>
       <div class="data-table-wrap">
         <table>
           <thead><tr><th>Amb.</th><th>Hectáreas</th><th>%</th><th>NDVI</th></tr></thead>
@@ -971,7 +978,7 @@ tr:last-child td { border-bottom: none; }
           <div class="ct-sub">Inmobiliaria Rural · Mercedes, BA</div>
           <div class="ct-sub" style="margin-top:2px;">Calle 23 N° 524 B · +54 9 11 3258 6146</div>
         </div>
-        <div class="ct-right">CT Satelital<br>Análisis remoto<br><span id="footer-fecha"></span><br><span style="opacity:.6">v3.5 · 21-oct-2026</span></div>
+        <div class="ct-right">CT Satelital<br>Análisis remoto<br><span id="footer-fecha"></span><br><span style="opacity:.6">v3.6 · 22-oct-2026</span></div>
       </div>
       <div style="height:8px;"></div>
     </div>
@@ -1305,6 +1312,7 @@ async function iniciarAnalisis() {
       propietario: document.getElementById('f-propietario').value.trim(),
       sup:         document.getElementById('f-sup').value || data.superficie,
       precio:      document.getElementById('f-precio').value.trim(),
+      precio_tipo: document.getElementById('f-precio-tipo').value,
       desc:        document.getElementById('f-desc').value.trim(),
       anio:        document.getElementById('f-anio').value,
       ndvi:        data.ndvi_promedio,
@@ -1395,7 +1403,9 @@ function mostrarResultado(campo) {
     const c = colors[i % colors.length];
     const w = Math.round(((a.hectareas||0) / maxAHa) * 80);
     return `<tr>
-      <td><span class="chip" style="background:${c}22;color:${c};">A${i+1}</span></td>
+      <td style="white-space:nowrap;"><span class="chip" style="background:${c}22;color:${c};">A${i+1}</span>
+        <input type="text" class="amb-name" placeholder="Poné un nombre…" value="${attr(campo.ambInfo && campo.ambInfo[i] && campo.ambInfo[i].nombre)}"
+               oninput="ambInfo(${i}).nombre=this.value;guardarDeb();syncAmb(${i},'tabla')"></td>
       <td style="font-variant-numeric:tabular-nums;">${(a.hectareas||0).toFixed(1)}</td>
       <td style="font-variant-numeric:tabular-nums;">${(a.porcentaje||0).toFixed(1)}%</td>
       <td style="font-variant-numeric:tabular-nums;">${a.ndvi_promedio != null ? parseFloat(a.ndvi_promedio).toFixed(3) : '—'}</td>
@@ -1523,6 +1533,15 @@ function ambGrupos(d) {
   return [...map.values()].map(g => ({ ...g, ndvi: g.ndviHa ? g.ndviSum / g.ndviHa : null }));
 }
 
+/* Mantiene sincronizados el nombre de la tabla y el de la sección de edición */
+function syncAmb(i, desde) {
+  const v = (resultData.ambInfo && resultData.ambInfo[i] && resultData.ambInfo[i].nombre) || '';
+  const dest = desde === 'tabla'
+    ? document.querySelectorAll('#amb-edit input[type=text]')[i]
+    : document.querySelectorAll('#tb-amb input.amb-name')[i];
+  if (dest && dest.value !== v) dest.value = v;
+}
+
 function renderEditores(campo) {
   const ea = document.getElementById('amb-edit'), es = document.getElementById('sue-edit');
   if (!ea || !es) return;
@@ -1531,7 +1550,7 @@ function renderEditores(campo) {
     <div class="ed-box">
       <div class="ed-h"><span class="sw" style="background:${AMB_COLORS[i % 6]}"></span><b>A${i+1}</b> · ${(a.hectareas||0).toFixed(1)} ha (${(a.porcentaje||0).toFixed(1)}%)</div>
       <input type="text" placeholder="Nombre (ej: Ganadero superior)" value="${attr(info[i] && info[i].nombre)}"
-             oninput="ambInfo(${i}).nombre=this.value;guardarDeb()">
+             oninput="ambInfo(${i}).nombre=this.value;guardarDeb();syncAmb(${i},'seccion')">
       <textarea rows="2" placeholder="Descripción (ej: Mejor drenaje de todo el campo)"
              oninput="ambInfo(${i}).desc=this.value;guardarDeb()">${txt(info[i] && info[i].desc)}</textarea>
     </div>`).join('') || '<div class="dl-note">Sin ambientes.</div>';
@@ -1757,6 +1776,23 @@ function renderGe() {
     </div>`).join('');
 }
 
+/* ─── Precio (siempre en USD; total o por hectárea) ─────── */
+function fmtPrecio(d) {
+  const raw = String(d.precio || '').trim();
+  if (!raw) return null;
+  let s = raw.replace(/[^0-9,.]/g, '');
+  if (/^\d{1,3}(\.\d{3})+(,\d+)?$/.test(s)) s = s.replace(/\./g, '').replace(',', '.');   // 2.500.000
+  else s = s.replace(/,/g, '.');
+  const n = parseFloat(s);
+  if (!isFinite(n)) return { valor: raw, tipoTxt: '', equiv: '' };
+  const f = x => 'USD ' + Math.round(x).toLocaleString('es-AR');
+  const sup = parseFloat(d.superficie) || 0;
+  if (d.precio_tipo === 'ha') {
+    return { valor: f(n) + ' / ha', tipoTxt: 'por hectárea', equiv: sup ? 'Total aprox.: ' + f(n * sup) : '' };
+  }
+  return { valor: f(n), tipoTxt: 'total', equiv: sup ? 'Equivale a ' + f(n / sup) + ' / ha' : '' };
+}
+
 /* ─── Exportar PDF ───────────────────────────────────────── */
 function exportarPDF() {
   if (!resultData) return;
@@ -1764,6 +1800,7 @@ function exportarPDF() {
   const d    = resultData;
   const fecha = new Date(d.fecha || Date.now()).toLocaleDateString('es-AR', { day:'2-digit', month:'long', year:'numeric' });
   const sup  = d.superficie ? Math.round(d.superficie).toLocaleString('es-AR') : (d.sup || '—');
+  const pr   = fmtPrecio(d);
 
   const imgFn = (url, emoji, label) => url
     ? `<div class="map-box"><img src="${url}" alt="${label}" style="width:100%;aspect-ratio:4/3;object-fit:contain;background:#fff;display:block;"><div class="ml">${label}</div></div>`
@@ -2025,7 +2062,7 @@ tr:nth-child(even) td{background:#F9FBF8;}
       <div class="cv-sl">Ambientes</div>
     </div>
     <div class="cv-stat">
-      ${d.precio?`<div class="cv-sv cv-price">${d.precio}</div><div class="cv-sl">Precio pedido</div>`
+      ${pr?`<div class="cv-sv cv-price" style="${pr.valor.length > 12 ? 'font-size:17px;' : ''}">${pr.valor}</div><div class="cv-sl">Precio pedido${pr.tipoTxt ? ' · ' + pr.tipoTxt : ''}</div>`
                :`<div class="cv-sv">${d.anio||2024}</div><div class="cv-sl">Año análisis</div>`}
     </div>
   </div>
@@ -2049,7 +2086,8 @@ ${(d.desc || d.partido || d.propietario) ? `
       ${d.partido?`<div class="ficha-row"><div class="ficha-lbl">Partido / Prov.</div><div class="ficha-val">${d.partido}</div></div>`:''}
       ${d.propietario?`<div class="ficha-row"><div class="ficha-lbl">Propietario</div><div class="ficha-val">${d.propietario}</div></div>`:''}
       <div class="ficha-row"><div class="ficha-lbl">Superficie</div><div class="ficha-val">${sup} ha</div></div>
-      ${d.precio?`<div class="ficha-row"><div class="ficha-lbl">Precio pedido</div><div class="ficha-val">${d.precio}</div></div>`:''}
+      ${pr?`<div class="ficha-row"><div class="ficha-lbl">Precio pedido${pr.tipoTxt ? ' (' + pr.tipoTxt + ')' : ''}</div><div class="ficha-val">${pr.valor}</div></div>`:''}
+      ${pr && pr.equiv?`<div class="ficha-row"><div class="ficha-lbl">Equivalencia</div><div class="ficha-val">${pr.equiv}</div></div>`:''}
       <div class="ficha-row"><div class="ficha-lbl">NDVI promedio</div><div class="ficha-val">${d.ndvi?parseFloat(d.ndvi).toFixed(3):'—'}</div></div>
       <div class="ficha-row"><div class="ficha-lbl">Ambientes</div><div class="ficha-val">${(d.ambientes||[]).length||'—'}</div></div>
       <div class="ficha-row"><div class="ficha-lbl">Unidades suelo</div><div class="ficha-val">${(d.suelos||[]).length||'—'}</div></div>
