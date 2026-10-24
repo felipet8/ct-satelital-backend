@@ -569,7 +569,7 @@ def analizar_lote(geom: ee.Geometry, num_ambientes: int = 4, anio: int = 2024) -
 
 
 # ─── Imagen Sentinel-2 de una fecha elegida ───────────────────────────────────
-def imagen_por_fecha(geom, fecha, modo='falso', dims=1000, margen=0.12, ventana=12):
+def imagen_por_fecha(geom, fecha, modo='falso', dims=1000, margen=0.12, ventana=12, criterio='cercana'):
     """Miniatura (JPG, sin recortar) de la imagen Sentinel-2 más cercana a `fecha`
     (±ventana días, preferentemente con poca nubosidad), con un margen alrededor del campo."""
     d0 = ee.Date(fecha)
@@ -595,7 +595,8 @@ def imagen_por_fecha(geom, fecha, modo='falso', dims=1000, margen=0.12, ventana=
     if claras.size().getInfo() > 0:
         col = claras
     col = col.map(lambda i: i.set('dd', ee.Number(i.date().difference(d0, 'day')).abs()))
-    best = ee.Image(col.sort('dd').first())
+    orden = 'CLOUDY_PIXEL_PERCENTAGE' if criterio == 'limpia' else 'dd'   # 'limpia': la de menos nubes dentro de la ventana
+    best = ee.Image(col.sort(orden).first())
     fecha_real = ee.Date(best.get('system:time_start')).format('YYYY-MM-dd').getInfo()
 
     if modo == 'real':
@@ -779,6 +780,25 @@ def debug_suelos():
     return jsonify(out)
 
 
+@app.route('/proxy_img', methods=['POST'])
+def proxy_img():
+    """Descarga una imagen generada por Earth Engine y la devuelve (para guardarla en el navegador).
+    Solo acepta URLs de Earth Engine."""
+    import urllib.request, urllib.parse
+    from flask import Response
+    try:
+        u = request.form['url']
+        host = urllib.parse.urlparse(u).hostname or ''
+        if not (host == 'earthengine.googleapis.com' or host.endswith('.earthengine.googleapis.com')):
+            return jsonify({'error': 'URL no permitida'}), 400
+        with urllib.request.urlopen(u, timeout=60) as r:
+            data = r.read()
+            ctype = r.headers.get('Content-Type', 'image/png')
+        return Response(data, mimetype=ctype)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/imagen', methods=['POST'])
 def imagen():
     """Imagen Sentinel-2 de una fecha elegida (con margen alrededor del campo)."""
@@ -788,10 +808,12 @@ def imagen():
         datetime.strptime(fecha, '%Y-%m-%d')
         modo  = request.form.get('modo', 'falso')
         dims  = max(300, min(int(request.form.get('dims', 1000)), 2000))
+        ventana  = max(1, min(int(request.form.get('ventana', 12)), 60))
+        criterio = request.form.get('criterio', 'cercana')
     except Exception as e:
         return jsonify({'error': f'Parámetros inválidos: {e}'}), 400
     try:
-        return jsonify(imagen_por_fecha(geom, fecha, modo, dims))
+        return jsonify(imagen_por_fecha(geom, fecha, modo, dims, ventana=ventana, criterio=criterio))
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 

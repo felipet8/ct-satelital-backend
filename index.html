@@ -801,6 +801,7 @@ tr:last-child td { border-bottom: none; }
         <button class="btn-sec" onclick="compartirWhatsApp()">💬 WhatsApp</button>
         <button class="btn-sec accent" onclick="exportarPDF()">📄 Exportar PDF</button>
       </div>
+      <button class="btn-sec full" id="btn-regen" onclick="regenerarImagenes(this)" style="margin-bottom:10px;">🔄 Regenerar imágenes (campos viejos)</button>
 
       <!-- Stats -->
       <div class="stats-row">
@@ -945,6 +946,13 @@ tr:last-child td { border-bottom: none; }
         <input type="text" id="ref-cap" class="full" placeholder="Detalle (ej: pleno desarrollo de los cultivos de verano)">
         <button class="btn-sec full" onclick="agregarRef(this)">+ Agregar imagen</button>
       </div>
+      <div class="dl-note" style="margin:10px 0 6px;"><b>Varios años de una vez:</b> tildá los años y la estación; para cada uno se elige la imagen Sentinel-2 con menos nubes de esa estación (verano: dic–feb · invierno: jun–ago).</div>
+      <div id="multi-anios" style="display:flex;flex-wrap:wrap;gap:6px 10px;margin-bottom:6px;"></div>
+      <div style="display:flex;gap:14px;margin-bottom:6px;font-size:12px;">
+        <label style="display:flex;gap:5px;align-items:center;"><input type="checkbox" id="ms-ver" style="width:auto;" checked> Verano</label>
+        <label style="display:flex;gap:5px;align-items:center;"><input type="checkbox" id="ms-inv" style="width:auto;"> Invierno</label>
+      </div>
+      <button class="btn-sec full" id="btn-multi" onclick="agregarVariosAnios(this)">+ Agregar años seleccionados</button>
       <div id="ref-list" style="margin-bottom:12px;"></div>
 
       <!-- Lámina -->
@@ -978,7 +986,7 @@ tr:last-child td { border-bottom: none; }
           <div class="ct-sub">Inmobiliaria Rural · Mercedes, BA</div>
           <div class="ct-sub" style="margin-top:2px;">Calle 23 N° 524 B · +54 9 11 3258 6146</div>
         </div>
-        <div class="ct-right">CT Satelital<br>Análisis remoto<br><span id="footer-fecha"></span><br><span style="opacity:.6">v3.6 · 22-oct-2026</span></div>
+        <div class="ct-right">CT Satelital<br>Análisis remoto<br><span id="footer-fecha"></span><br><span style="opacity:.6">v3.8 · 24-oct-2026</span></div>
       </div>
       <div style="height:8px;"></div>
     </div>
@@ -1017,16 +1025,82 @@ function fmtFechaImg(iso) {
   return d.toLocaleDateString('es-AR', { day:'2-digit', month:'short', year:'numeric' });
 }
 
-function dbRead()   { try { return JSON.parse(localStorage.getItem(DB_KEY) || '[]'); } catch { return []; } }
-function dbWrite(d) { try { localStorage.setItem(DB_KEY, JSON.stringify(d)); } catch {} }
+/* Los campos se guardan en IndexedDB (cabe mucho más que localStorage, y guarda las imágenes dentro).
+   _db es una copia en memoria; dbRead() es instantáneo. */
+let _db = [], _idb = null, _idbWarned = false;
+function idbOpen() {
+  return new Promise((res, rej) => {
+    const rq = indexedDB.open('ct-satelital', 1);
+    rq.onupgradeneeded = () => rq.result.createObjectStore('campos', { keyPath: 'id' });
+    rq.onsuccess = () => res(rq.result); rq.onerror = () => rej(rq.error);
+  });
+}
+function idbPut(campo) {
+  if (!_idb) return Promise.reject(new Error('sin base'));
+  return new Promise((res, rej) => {
+    const tx = _idb.transaction('campos', 'readwrite');
+    tx.objectStore('campos').put(campo);
+    tx.oncomplete = res; tx.onerror = () => rej(tx.error); tx.onabort = () => rej(tx.error);
+  });
+}
+async function dbInit() {
+  try {
+    _idb = await idbOpen();
+    _db = await new Promise((res, rej) => {
+      const rq = _idb.transaction('campos').objectStore('campos').getAll();
+      rq.onsuccess = () => res(rq.result); rq.onerror = () => rej(rq.error);
+    });
+    if (!_db.length) {                       // migrar lo que había en localStorage (versiones anteriores)
+      let viejo = []; try { viejo = JSON.parse(localStorage.getItem(DB_KEY) || '[]'); } catch {}
+      for (const c of viejo) { try { await idbPut(c); } catch {} }
+      _db = viejo;
+    }
+    _db.sort((a, b) => String(b.fecha).localeCompare(String(a.fecha)));
+    if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
+  } catch (e) {
+    console.error('IndexedDB no disponible', e);
+    try { _db = JSON.parse(localStorage.getItem(DB_KEY) || '[]'); } catch { _db = []; }
+  }
+}
+function dbRead() { return _db; }
 function dbSave(campo) {
-  const d = dbRead();
-  campo.id   = campo.id || Date.now();
+  campo.id    = campo.id || Date.now();
   campo.fecha = campo.fecha || new Date().toISOString();
-  const idx  = d.findIndex(c => c.id === campo.id);
-  if (idx >= 0) d[idx] = campo; else d.unshift(campo);
-  dbWrite(d);
+  const idx = _db.findIndex(c => c.id === campo.id);
+  if (idx >= 0) _db[idx] = campo; else _db.unshift(campo);
+  idbPut(campo).catch(e => {
+    console.error(e);
+    if (!_idbWarned) { _idbWarned = true; showToast('⚠️ No se pudo guardar en este navegador (¿modo privado o sin espacio?)'); }
+  });
   return campo;
+}
+
+/* Descarga una imagen y la devuelve como data: URL, para que quede guardada con el campo */
+const IMG_CAMPOS = ['url_verano','url_invierno','url_ndvi','url_ambientes','url_suelos','url_topografia'];
+function blobADataURL(b) { return new Promise((res, rej) => { const f = new FileReader(); f.onload = () => res(f.result); f.onerror = rej; f.readAsDataURL(b); }); }
+async function embedUrl(url) {
+  if (!url || url.startsWith('data:')) return url;
+  try {                                       // directo desde el navegador
+    const r = await fetch(url); if (!r.ok) throw 0;
+    return await blobADataURL(await r.blob());
+  } catch {}
+  try {                                       // por el backend (si Google no permite CORS)
+    const fd = new FormData(); fd.append('url', url);
+    const r = await fetch(backendBase() + '/proxy_img', { method: 'POST', body: fd });
+    if (!r.ok) throw 0;
+    return await blobADataURL(await r.blob());
+  } catch {}
+  return url;
+}
+async function embedCampo(campo) {
+  let n = 0;
+  for (const k of IMG_CAMPOS) {
+    if (campo[k] && !campo[k].startsWith('data:')) { const u = await embedUrl(campo[k]); if (u.startsWith('data:')) n++; campo[k] = u; }
+  }
+  campo.thumb = campo.url_ndvi || campo.url_verano || null;
+  for (const r of (campo.refImages || [])) { if (r.url && !r.url.startsWith('data:')) { const u = await embedUrl(r.url); if (u.startsWith('data:')) n++; r.url = u; } }
+  dbSave(campo);
+  return n;
 }
 
 /* ─── Theme ──────────────────────────────────────────────── */
@@ -1341,6 +1415,8 @@ async function iniciarAnalisis() {
     geImages = []; renderGe();
     mostrarResultado(campo);
     goTo('resultado');
+    showToast('Guardando imágenes en este navegador…');
+    embedCampo(campo).then(n => showToast(n ? '✓ Campo guardado con sus imágenes' : '⚠️ Campo guardado, pero las imágenes no se pudieron descargar'));
 
   } catch (err) {
     stopLoading();
@@ -1481,6 +1557,36 @@ function renderCamposList() {
   }).join('');
 }
 
+/* Para campos guardados antes: las imágenes se vencieron. Se vuelven a pedir con el mismo perímetro y año,
+   conservando nombres, descripciones, precios e imágenes de referencia (por fecha). */
+async function regenerarImagenes(btn) {
+  const d = resultData;
+  if (!d || !d.geojson) { showToast('Este campo no tiene el perímetro guardado: hay que analizarlo de nuevo'); return; }
+  const orig = btn.textContent; btn.disabled = true; btn.textContent = 'Pidiendo imágenes nuevas… (puede tardar 1-2 min)';
+  try {
+    const fd = new FormData();
+    fd.append('geojson', JSON.stringify(d.geojson));
+    fd.append('nombre', d.nombre || 'Campo'); fd.append('anio', d.anio || new Date().getFullYear());
+    fd.append('num_ambientes', d.num_ambientes || (d.ambientes || []).length || 4);
+    const r = await fetch(backendBase() + '/analizar', { method: 'POST', body: fd });
+    const j = await r.json();
+    if (!r.ok || j.error) throw new Error(j.error || ('HTTP ' + r.status));
+    for (const k of IMG_CAMPOS) d[k] = j[k];
+    d.fecha_verano = j.fecha_verano; d.fecha_invierno = j.fecha_invierno;
+    d.anio_verano = j.anio_verano; d.anio_invierno = j.anio_invierno;
+    d.suelos_poligonos = j.suelos_poligonos || d.suelos_poligonos;
+    btn.textContent = 'Regenerando imágenes de referencia…';
+    for (const ref of (d.refImages || [])) {
+      try { const x = await pedirImagen(ref.fecha, ref.modo || 'falso', 1000); ref.url = x.url; ref.bbox = x.bbox; } catch {}
+    }
+    btn.textContent = 'Guardando imágenes…';
+    const n = await embedCampo(d);
+    mostrarResultado(d);
+    showToast(n ? '✓ Imágenes regeneradas y guardadas' : '⚠️ No se pudieron guardar las imágenes');
+  } catch (e) { showToast('⚠️ ' + e.message); }
+  finally { btn.disabled = false; btn.textContent = orig; }
+}
+
 function abrirCampo(id) {
   const campo = dbRead().find(c => c.id === id);
   if (!campo) return;
@@ -1585,14 +1691,53 @@ async function agregarRef(btn) {
   try {
     const j = await pedirImagen(fecha, document.getElementById('ref-modo').value, 1000);
     (resultData.refImages = resultData.refImages || []).push({
-      url: j.url, fecha: j.fecha, bbox: j.bbox, modo: j.modo, fuente: j.fuente,
+      url: await embedUrl(j.url), fecha: j.fecha, bbox: j.bbox, modo: j.modo, fuente: j.fuente,
       caption: document.getElementById('ref-cap').value.trim(), perimetro: true });
     guardarCampo(); renderRefs(); renderLamBase();
     showToast(j.fecha === fecha ? 'Imagen agregada' : 'Imagen más cercana: ' + fechaCorta(j.fecha));
   } catch (e) { showToast('⚠️ ' + e.message); }
   finally { btn.disabled = false; btn.textContent = orig; }
 }
+function initMultiAnios() {
+  const el = document.getElementById('multi-anios');
+  if (!el || el.dataset.ok) return;
+  const y = new Date().getFullYear(); let s = '';
+  for (let a = y; a >= 2017; a--)
+    s += `<label style="display:flex;gap:4px;align-items:center;font-size:12px;"><input type="checkbox" class="ms-anio" value="${a}" style="width:auto;"> ${a}</label>`;
+  el.innerHTML = s; el.dataset.ok = '1';
+}
+async function agregarVariosAnios(btn) {
+  const anios = [...document.querySelectorAll('.ms-anio:checked')].map(c => +c.value).sort((a, b) => a - b);
+  const est = [];
+  if (document.getElementById('ms-ver').checked) est.push('verano');
+  if (document.getElementById('ms-inv').checked) est.push('invierno');
+  if (!anios.length || !est.length) { showToast('Elegí al menos un año y una estación'); return; }
+  const orig = btn.textContent; btn.disabled = true;
+  const tareas = []; anios.forEach(a => est.forEach(e => tareas.push([a, e])));
+  let ok = 0, fallos = [];
+  for (let k = 0; k < tareas.length; k++) {
+    const [a, e] = tareas[k];
+    btn.textContent = `Buscando ${k + 1}/${tareas.length}: ${e} ${a}…`;
+    try {
+      const fd = new FormData();
+      fd.append('geojson', JSON.stringify(resultData.geojson));
+      fd.append('fecha', e === 'verano' ? `${a}-01-15` : `${a}-07-15`);
+      fd.append('modo', document.getElementById('ref-modo').value);
+      fd.append('dims', 1000); fd.append('ventana', 45); fd.append('criterio', 'limpia');
+      const r = await fetch(backendBase() + '/imagen', { method: 'POST', body: fd });
+      let j = {}; try { j = await r.json(); } catch {}
+      if (!r.ok || j.error) throw new Error(j.error || ('HTTP ' + r.status));
+      (resultData.refImages = resultData.refImages || []).push({
+        url: await embedUrl(j.url), fecha: j.fecha, bbox: j.bbox, modo: j.modo, fuente: j.fuente,
+        caption: (e === 'verano' ? 'Verano ' : 'Invierno ') + a, perimetro: true });
+      ok++; guardarCampo(); renderRefs(); renderLamBase();
+    } catch (err) { fallos.push(`${e} ${a}`); }
+  }
+  btn.disabled = false; btn.textContent = orig;
+  showToast(ok + ' imagen(es) agregada(s)' + (fallos.length ? ' · sin imagen: ' + fallos.join(', ') : ''));
+}
 function renderRefs() {
+  initMultiAnios();
   const el = document.getElementById('ref-list');
   if (!el) return;
   const refs = (resultData && resultData.refImages) || [];
@@ -2251,6 +2396,7 @@ function showToast(msg) {
 
 /* ─── Boot ───────────────────────────────────────────────── */
 renderCamposList();
+dbInit().then(renderCamposList);
 
 // tc-mapa starts as flex (active tab)
 document.getElementById('tc-mapa').style.display  = 'flex';
