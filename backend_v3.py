@@ -888,7 +888,7 @@ def normalizar_por_campo(pila, geom):
     m = ee.Dictionary(media).toImage(AMB_IA_BANDAS_V2)
     s = ee.Dictionary(desv).toImage(AMB_IA_BANDAS_V2).max(1e-6)
     z = pila.select(AMB_IA_BANDAS_V2).subtract(m).divide(s)
-    return z.addBands(pila.select('agua_freq').rename('agua_freq_abs')).select(AMB_IA_BANDAS_V3)
+    return z.addBands(pila.select('agua_freq').rename('agua_freq_abs')).select(AMB_IA_BANDAS_V3).toFloat()
 
 
 def pila_para_clasificar(pila, geom, version):
@@ -913,7 +913,7 @@ def entrenar_ambientes(excluir_campo=None, n_por_clase=500, version='v2'):
             if c == excluir_campo:
                 continue
             g = fc.filter(ee.Filter.eq('campo', c)).geometry()
-            imgs.append(normalizar_por_campo(pila, g).clip(g))
+            imgs.append(normalizar_por_campo(pila, g).clip(g).toFloat())
         pila_train = ee.ImageCollection(imgs).mosaic()
     muestra = pila_train.addBands(clase_img).stratifiedSample(
         numPoints=n_por_clase, classBand='clase', region=entren.geometry(),
