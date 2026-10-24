@@ -780,6 +780,148 @@ def debug_suelos():
     return jsonify(out)
 
 
+# ─── Ambientes "modelo Felipe": clasificador entrenado con sus mapas ─────────
+ASSET_ENTREN = f'projects/{GEE_PROJECT}/assets/ambientes_entrenamiento'
+AMB_IA = {1: ('Loma', '#267300'), 2: ('Tendido alto', '#70A800'), 3: ('Tendido bajo', '#FFD37F'),
+          4: ('Bajos encharcables', '#FFFFBE'), 5: ('Cubetas y lagunas semipermanentes', '#73DFFF'),
+          6: ('Montes y construcciones', '#730000')}
+AMB_IA_BANDAS = ['agua_freq', 'mndwi_p90', 'mndwi_p50', 'ndvi_p10', 'ndvi_p50', 'ndvi_p90', 'ndvi_sd',
+                 'b11_p50', 'ndvi_ver', 'ndvi_oto', 'ndvi_inv', 'ndvi_pri', 'tpi300', 'tpi900', 'elev']
+
+
+def pila_ambientes(region, desde='2018-01-01'):
+    """Capas que describen cuánto se inunda, cuánto verde tiene y dónde está en el relieve cada píxel.
+    Usa todas las imágenes Sentinel-2 desde `desde`: los percentiles extremos reemplazan a elegir a mano
+    la imagen de 'máxima agua' y 'máxima seca'."""
+    hoy = datetime.utcnow().strftime('%Y-%m-%d')
+
+    def indices(i):
+        i = enmascarar_nubes(i)
+        ndvi  = i.normalizedDifference(['B8', 'B4']).rename('ndvi')
+        mndwi = i.normalizedDifference(['B3', 'B11']).rename('mndwi')
+        return ndvi.addBands(mndwi).addBands(i.select('B11').rename('b11')) \
+                   .set('system:time_start', i.get('system:time_start'))
+
+    col = (ee.ImageCollection(S2).filterBounds(region).filterDate(desde, hoy)
+           .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 60)).map(indices))
+    pct = col.select(['ndvi', 'mndwi', 'b11']).reduce(ee.Reducer.percentile([10, 50, 90]))
+    agua = col.map(lambda i: i.select('mndwi').gt(0).rename('w')).mean().rename('agua_freq')
+    sd = col.select('ndvi').reduce(ee.Reducer.stdDev()).rename('ndvi_sd')
+
+    def estacion(m1, m2, nombre):
+        c = col.filter(ee.Filter.calendarRange(m1, m2, 'month')).select('ndvi')
+        return c.median().rename(nombre)
+    ver = col.filter(ee.Filter.Or(ee.Filter.calendarRange(12, 12, 'month'),
+                                  ee.Filter.calendarRange(1, 2, 'month'))).select('ndvi').median().rename('ndvi_ver')
+    oto = estacion(3, 5, 'ndvi_oto')
+    inv = estacion(6, 8, 'ndvi_inv')
+    pri = estacion(9, 11, 'ndvi_pri')
+
+    elev = ee.Image('USGS/SRTMGL1_003').select('elevation').rename('elev')
+    tpi300 = elev.subtract(elev.focalMean(300, 'circle', 'meters')).rename('tpi300')
+    tpi900 = elev.subtract(elev.focalMean(900, 'circle', 'meters')).rename('tpi900')
+
+    img = (agua.addBands(pct.select(['mndwi_p90', 'mndwi_p50', 'ndvi_p10', 'ndvi_p50', 'ndvi_p90', 'b11_p50']))
+              .addBands(sd).addBands(ver).addBands(oto).addBands(inv).addBands(pri)
+              .addBands(elev).addBands(tpi300).addBands(tpi900))
+    return img.select(AMB_IA_BANDAS)
+
+
+def entrenar_ambientes(excluir_campo=None, n_por_clase=500):
+    """Entrena un Random Forest con los mapas de Felipe (asset ambientes_entrenamiento).
+    Si `excluir_campo`, ese campo queda afuera (para validar contra un mapa que el modelo no vio)."""
+    fc = ee.FeatureCollection(ASSET_ENTREN)
+    region = fc.geometry().bounds()
+    pila = pila_ambientes(region)
+    entren = fc if not excluir_campo else fc.filter(ee.Filter.neq('campo', excluir_campo))
+    clase_img = entren.reduceToImage(['clase'], ee.Reducer.first()).rename('clase').toInt()
+    muestra = pila.addBands(clase_img).stratifiedSample(
+        numPoints=n_por_clase, classBand='clase', region=entren.geometry(),
+        scale=20, seed=7, dropNulls=True, tileScale=4)
+    clf = ee.Classifier.smileRandomForest(150, seed=7).train(muestra, 'clase', AMB_IA_BANDAS)
+    return clf, pila, fc
+
+
+@app.route('/validar_ia', methods=['GET'])
+def validar_ia():
+    """Compara el modelo contra un mapa de Felipe que NO se usó para entrenar.
+    /validar_ia                         → lista de campos disponibles
+    /validar_ia?campo=El%20Buzon        → precisión general y por ambiente en ese campo"""
+    try:
+        fc = ee.FeatureCollection(ASSET_ENTREN)
+        campo = request.args.get('campo')
+        if not campo:
+            return jsonify({'campos': sorted(fc.aggregate_array('campo').distinct().getInfo()),
+                            'ejemplo': '/validar_ia?campo=La%20Cigue%C3%B1a%202'})
+        clf, pila, fc = entrenar_ambientes(excluir_campo=campo)
+        test = fc.filter(ee.Filter.eq('campo', campo))
+        clase_img = test.reduceToImage(['clase'], ee.Reducer.first()).rename('clase').toInt()
+        pred = pila.classify(clf).focalMode(30, 'circle', 'meters').rename('classification')
+        muestra = pred.addBands(clase_img).stratifiedSample(
+            numPoints=400, classBand='clase', region=test.geometry(), scale=20, seed=3,
+            dropNulls=True, tileScale=4)
+        cm = muestra.errorMatrix('clase', 'classification', [1, 2, 3, 4, 5, 6])
+        acc = cm.accuracy().getInfo()
+        # además: precisión "realista" sin balancear por clase (puntos al azar proporcionales a la superficie)
+        azar = pred.addBands(clase_img).sample(region=test.geometry(), scale=20, numPixels=3000, seed=5,
+                                               dropNulls=True, tileScale=4)
+        cm2 = azar.errorMatrix('clase', 'classification', [1, 2, 3, 4, 5, 6])
+        mat = cm2.getInfo()                      # filas = mapa de Felipe, columnas = modelo (clases 1..6)
+        tot = sum(sum(f) for f in mat) or 1
+        ok = sum(mat[i][i] for i in range(len(mat)))
+        por_amb = {}
+        for i, f in enumerate(mat):
+            s = sum(f)
+            if s:
+                por_amb[AMB_IA[i + 1][0]] = {'puntos': int(s), 'acierto': round(f[i] / s, 2)}
+        return jsonify({
+            'campo': campo,
+            'precision_general_proporcional_a_superficie': round(ok / tot, 3),
+            'precision_balanceada_por_ambiente': round(acc, 3),
+            'por_ambiente(que_parte_del_mapa_de_Felipe_acierta_el_modelo)': por_amb,
+            'matriz_filas_Felipe_columnas_modelo': mat,
+            'orden_clases': [AMB_IA[k][0] for k in sorted(AMB_IA)],
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/ambientes_ia', methods=['POST'])
+def ambientes_ia():
+    """Clasifica un campo con el modelo entrenado con TODOS los mapas de Felipe.
+    Recibe geojson (igual que /imagen). Devuelve imagen, hectáreas por ambiente y colores."""
+    try:
+        geom = geojson_a_geometry(request.form['geojson'])
+    except Exception as e:
+        return jsonify({'error': f'Parámetros inválidos: {e}'}), 400
+    try:
+        clf, pila, fc = entrenar_ambientes()
+        pred = pila.classify(clf).focalMode(30, 'circle', 'meters').rename('clase').toInt()
+        pred = pred.clip(geom)
+        paleta = [AMB_IA[k][1].lstrip('#') for k in sorted(AMB_IA)]
+        vis = pred.visualize(min=1, max=6, palette=paleta)
+        anillo = geom.bounds(1).getInfo()['coordinates'][0]
+        xs = [q[0] for q in anillo]; ys = [q[1] for q in anillo]
+        w, e, s_, n = min(xs), max(xs), min(ys), max(ys)
+        mx, my = (e - w) * 0.12, (n - s_) * 0.12
+        bbox = [w - mx, s_ - my, e + mx, n + my]
+        region = ee.Geometry.Rectangle(bbox, 'EPSG:4326', False)
+        url = vis.getThumbURL({'dimensions': 1000, 'region': region.getInfo(), 'format': 'png'})
+        areas = ee.Image.pixelArea().divide(1e4).addBands(pred).reduceRegion(
+            reducer=ee.Reducer.sum().group(groupField=1, groupName='clase'),
+            geometry=geom, scale=20, maxPixels=1e9, tileScale=4).getInfo()
+        ha = {int(g['clase']): g['sum'] for g in areas.get('groups', [])}
+        tot = sum(ha.values()) or 1
+        return jsonify({
+            'url': url, 'bbox': bbox,
+            'ambientes': [{'id': k, 'nombre': AMB_IA[k][0], 'color': AMB_IA[k][1],
+                           'ha': round(ha.get(k, 0), 1), 'pct': round(ha.get(k, 0) / tot * 100, 1)}
+                          for k in sorted(AMB_IA) if ha.get(k, 0) > 0],
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/proxy_img', methods=['POST'])
 def proxy_img():
     """Descarga una imagen generada por Earth Engine y la devuelve (para guardarla en el navegador).
