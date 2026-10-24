@@ -787,9 +787,14 @@ AMB_IA = {1: ('Loma', '#267300'), 2: ('Tendido alto', '#70A800'), 3: ('Tendido b
           6: ('Montes y construcciones', '#730000')}
 AMB_IA_BANDAS = ['agua_freq', 'mndwi_p90', 'mndwi_p50', 'ndvi_p10', 'ndvi_p50', 'ndvi_p90', 'ndvi_sd',
                  'b11_p50', 'ndvi_ver', 'ndvi_oto', 'ndvi_inv', 'ndvi_pri', 'tpi300', 'tpi900', 'elev']
+# v2: usa las fechas de referencia de Felipe → máxima seca = 2018, máxima agua = fines de 2025,
+#     y estaciones de años normales (2019-2024)
+AMB_IA_BANDAS_V2 = ['agua_freq', 'ndvi_seca', 'mndwi_seca', 'b11_seca',
+                    'ndvi_hum', 'mndwi_hum', 'mndwi_hum_max', 'b11_hum', 'd_ndvi', 'd_mndwi',
+                    'ndvi_ver', 'ndvi_oto', 'ndvi_inv', 'ndvi_pri', 'ndvi_sd', 'tpi300', 'tpi900', 'elev']
 
 
-def pila_ambientes(region, desde='2018-01-01'):
+def pila_ambientes(region, desde='2018-01-01', version='v2'):
     """Capas que describen cuánto se inunda, cuánto verde tiene y dónde está en el relieve cada píxel.
     Usa todas las imágenes Sentinel-2 desde `desde`: los percentiles extremos reemplazan a elegir a mano
     la imagen de 'máxima agua' y 'máxima seca'."""
@@ -821,24 +826,99 @@ def pila_ambientes(region, desde='2018-01-01'):
     tpi300 = elev.subtract(elev.focalMean(300, 'circle', 'meters')).rename('tpi300')
     tpi900 = elev.subtract(elev.focalMean(900, 'circle', 'meters')).rename('tpi900')
 
-    img = (agua.addBands(pct.select(['mndwi_p90', 'mndwi_p50', 'ndvi_p10', 'ndvi_p50', 'ndvi_p90', 'b11_p50']))
-              .addBands(sd).addBands(ver).addBands(oto).addBands(inv).addBands(pri)
+    if version != 'v2':
+        img = (agua.addBands(pct.select(['mndwi_p90', 'mndwi_p50', 'ndvi_p10', 'ndvi_p50', 'ndvi_p90', 'b11_p50']))
+                  .addBands(sd).addBands(ver).addBands(oto).addBands(inv).addBands(pri)
+                  .addBands(elev).addBands(tpi300).addBands(tpi900))
+        return img.select(AMB_IA_BANDAS)
+
+    # ── v2: fechas de referencia de Felipe ──
+    def indices_toa(i):
+        # Antes de 2019 Sentinel-2 SR no cubre toda la zona: se usa reflectancia TOA con máscara QA60
+        qa = i.select('QA60')
+        limpio = qa.bitwiseAnd(1 << 10).eq(0).And(qa.bitwiseAnd(1 << 11).eq(0))
+        i = i.updateMask(limpio).divide(10000)
+        return (i.normalizedDifference(['B8', 'B4']).rename('ndvi')
+                 .addBands(i.normalizedDifference(['B3', 'B11']).rename('mndwi'))
+                 .addBands(i.select('B11').rename('b11')))
+
+    def col_robusta(ini, fin):
+        sr = (ee.ImageCollection(S2).filterBounds(region).filterDate(ini, fin)
+              .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 60)).map(indices))
+        toa = (ee.ImageCollection('COPERNICUS/S2_HARMONIZED').filterBounds(region).filterDate(ini, fin)
+               .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 60)).map(indices_toa))
+        return ee.ImageCollection(ee.Algorithms.If(sr.size().gt(0), sr, toa))
+
+    def comp(ini, fin, sufijo, extra_max=False):
+        c = col_robusta(ini, fin)
+        med = c.median()
+        out = med.select('ndvi').rename('ndvi_' + sufijo).addBands(med.select('mndwi').rename('mndwi_' + sufijo)) \
+                .addBands(med.select('b11').rename('b11_' + sufijo))
+        if extra_max:
+            out = out.addBands(c.select('mndwi').reduce(ee.Reducer.percentile([90])).rename('mndwi_' + sufijo + '_max'))
+        return out
+    seca = comp('2017-12-01', '2018-04-01', 'seca')                        # máxima seca: verano 2017-18
+    hum  = comp('2025-10-15', '2026-01-15', 'hum', extra_max=True)         # máxima agua: fines de 2025
+    d_ndvi  = hum.select('ndvi_hum').subtract(seca.select('ndvi_seca')).rename('d_ndvi')
+    d_mndwi = hum.select('mndwi_hum').subtract(seca.select('mndwi_seca')).rename('d_mndwi')
+
+    def normal(m1, m2, nombre):
+        c = (col.filterDate('2019-01-01', '2025-01-01')
+                .filter(ee.Filter.calendarRange(m1, m2, 'month')).select('ndvi'))
+        return c.median().rename(nombre)
+    n_ver = (col.filterDate('2019-01-01', '2025-01-01')
+                .filter(ee.Filter.Or(ee.Filter.calendarRange(12, 12, 'month'), ee.Filter.calendarRange(1, 2, 'month')))
+                .select('ndvi').median().rename('ndvi_ver'))
+    img = (agua.addBands(seca).addBands(hum).addBands(d_ndvi).addBands(d_mndwi)
+              .addBands(n_ver).addBands(normal(3, 5, 'ndvi_oto')).addBands(normal(6, 8, 'ndvi_inv'))
+              .addBands(normal(9, 11, 'ndvi_pri')).addBands(sd)
               .addBands(elev).addBands(tpi300).addBands(tpi900))
-    return img.select(AMB_IA_BANDAS)
+    return img.select(AMB_IA_BANDAS_V2)
 
 
-def entrenar_ambientes(excluir_campo=None, n_por_clase=500):
+AMB_IA_BANDAS_V3 = AMB_IA_BANDAS_V2 + ['agua_freq_abs']
+_CAMPOS_CACHE = {}
+
+
+def normalizar_por_campo(pila, geom):
+    """v3: cada capa se expresa respecto del propio campo (cuántos desvíos más alta o más baja que el promedio
+    del campo). Imita el método de Felipe: de lo más alto del campo a lo más bajo del mismo campo."""
+    media = pila.reduceRegion(ee.Reducer.mean(), geom, 20, maxPixels=1e9, tileScale=4)
+    desv  = pila.reduceRegion(ee.Reducer.stdDev(), geom, 20, maxPixels=1e9, tileScale=4)
+    m = ee.Dictionary(media).toImage(AMB_IA_BANDAS_V2)
+    s = ee.Dictionary(desv).toImage(AMB_IA_BANDAS_V2).max(1e-6)
+    z = pila.select(AMB_IA_BANDAS_V2).subtract(m).divide(s)
+    return z.addBands(pila.select('agua_freq').rename('agua_freq_abs')).select(AMB_IA_BANDAS_V3)
+
+
+def pila_para_clasificar(pila, geom, version):
+    return normalizar_por_campo(pila, geom) if version == 'v3' else pila
+
+
+def entrenar_ambientes(excluir_campo=None, n_por_clase=500, version='v2'):
     """Entrena un Random Forest con los mapas de Felipe (asset ambientes_entrenamiento).
     Si `excluir_campo`, ese campo queda afuera (para validar contra un mapa que el modelo no vio)."""
     fc = ee.FeatureCollection(ASSET_ENTREN)
     region = fc.geometry().bounds()
-    pila = pila_ambientes(region)
+    pila = pila_ambientes(region, version='v1' if version == 'v1' else 'v2')
+    bandas = {'v1': AMB_IA_BANDAS, 'v2': AMB_IA_BANDAS_V2, 'v3': AMB_IA_BANDAS_V3}.get(version, AMB_IA_BANDAS_V2)
     entren = fc if not excluir_campo else fc.filter(ee.Filter.neq('campo', excluir_campo))
     clase_img = entren.reduceToImage(['clase'], ee.Reducer.first()).rename('clase').toInt()
-    muestra = pila.addBands(clase_img).stratifiedSample(
+    pila_train = pila
+    if version == 'v3':
+        if 'campos' not in _CAMPOS_CACHE:
+            _CAMPOS_CACHE['campos'] = sorted(fc.aggregate_array('campo').distinct().getInfo())
+        imgs = []
+        for c in _CAMPOS_CACHE['campos']:
+            if c == excluir_campo:
+                continue
+            g = fc.filter(ee.Filter.eq('campo', c)).geometry()
+            imgs.append(normalizar_por_campo(pila, g).clip(g))
+        pila_train = ee.ImageCollection(imgs).mosaic()
+    muestra = pila_train.addBands(clase_img).stratifiedSample(
         numPoints=n_por_clase, classBand='clase', region=entren.geometry(),
         scale=20, seed=7, dropNulls=True, tileScale=4)
-    clf = ee.Classifier.smileRandomForest(150, seed=7).train(muestra, 'clase', AMB_IA_BANDAS)
+    clf = ee.Classifier.smileRandomForest(150, seed=7).train(muestra, 'clase', bandas)
     return clf, pila, fc
 
 
@@ -852,11 +932,12 @@ def validar_ia():
         campo = request.args.get('campo')
         if not campo:
             return jsonify({'campos': sorted(fc.aggregate_array('campo').distinct().getInfo()),
-                            'ejemplo': '/validar_ia?campo=La%20Cigue%C3%B1a%202'})
-        clf, pila, fc = entrenar_ambientes(excluir_campo=campo)
+                            'ejemplo': '/validar_ia?campo=La%20Cigue%C3%B1a%202&modelo=v2   (modelo=v1 y v2 son versiones anteriores; probá modelo=v3)'})
+        version = request.args.get('modelo', 'v2')
+        clf, pila, fc = entrenar_ambientes(excluir_campo=campo, version=version)
         test = fc.filter(ee.Filter.eq('campo', campo))
         clase_img = test.reduceToImage(['clase'], ee.Reducer.first()).rename('clase').toInt()
-        pred = pila.classify(clf).focalMode(30, 'circle', 'meters').rename('classification')
+        pred = pila_para_clasificar(pila, test.geometry(), version).classify(clf).focalMode(30, 'circle', 'meters').rename('classification')
         muestra = pred.addBands(clase_img).stratifiedSample(
             numPoints=400, classBand='clase', region=test.geometry(), scale=20, seed=3,
             dropNulls=True, tileScale=4)
@@ -875,7 +956,7 @@ def validar_ia():
             if s:
                 por_amb[AMB_IA[i + 1][0]] = {'puntos': int(s), 'acierto': round(f[i] / s, 2)}
         return jsonify({
-            'campo': campo,
+            'campo': campo, 'modelo': version,
             'precision_general_proporcional_a_superficie': round(ok / tot, 3),
             'precision_balanceada_por_ambiente': round(acc, 3),
             'por_ambiente(que_parte_del_mapa_de_Felipe_acierta_el_modelo)': por_amb,
@@ -895,8 +976,9 @@ def ambientes_ia():
     except Exception as e:
         return jsonify({'error': f'Parámetros inválidos: {e}'}), 400
     try:
-        clf, pila, fc = entrenar_ambientes()
-        pred = pila.classify(clf).focalMode(30, 'circle', 'meters').rename('clase').toInt()
+        version = request.form.get('modelo', 'v2')
+        clf, pila, fc = entrenar_ambientes(version=version)
+        pred = pila_para_clasificar(pila, geom, version).classify(clf).focalMode(30, 'circle', 'meters').rename('clase').toInt()
         pred = pred.clip(geom)
         paleta = [AMB_IA[k][1].lstrip('#') for k in sorted(AMB_IA)]
         vis = pred.visualize(min=1, max=6, palette=paleta)
