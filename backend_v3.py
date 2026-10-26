@@ -1004,6 +1004,224 @@ def ambientes_ia():
         return jsonify({'error': str(e)}), 500
 
 
+# ─── Ambientes propios: lectura de SHP (.zip) / KMZ / KML dibujados por Felipe ─
+# Sin librerías extra: lector de shapefile y reproyección POSGAR (Gauss-Krüger) escritos a mano.
+import io, math, re, struct, zipfile
+import xml.etree.ElementTree as ET
+
+
+def _gk_inverso(E, N, faja):
+    """POSGAR 94/2007 faja 1-7 (Gauss-Krüger, k0=1, FE=faja*1e6+500000, origen lat -90) → (lon, lat) WGS84."""
+    a = 6378137.0; f = 1 / 298.257223563; n = f / (2 - f)
+    A = a / (1 + n) * (1 + n**2 / 4 + n**4 / 64)
+    b1 = n/2 - 2*n**2/3 + 37*n**3/96 - n**4/360
+    b2 = n**2/48 + n**3/15 - 437*n**4/1440
+    b3 = 17*n**3/480 - 37*n**4/840
+    b4 = 4397*n**4/161280
+    d1 = 2*n - 2*n**2/3 - 2*n**3 + 116*n**4/45
+    d2 = 7*n**2/3 - 8*n**3/5 - 227*n**4/45
+    d3 = 56*n**3/15 - 136*n**4/35
+    d4 = 4279*n**4/630
+    xi  = (N - A * math.pi / 2) / A                 # N medido desde el polo sur
+    eta = (E - (faja * 1e6 + 500000.0)) / A
+    xi_p, eta_p = xi, eta
+    for j, bj in enumerate((b1, b2, b3, b4), 1):
+        xi_p  -= bj * math.sin(2*j*xi) * math.cosh(2*j*eta)
+        eta_p -= bj * math.cos(2*j*xi) * math.sinh(2*j*eta)
+    chi = math.asin(math.sin(xi_p) / math.cosh(eta_p))
+    lat = chi + sum(dj * math.sin(2*j*chi) for j, dj in enumerate((d1, d2, d3, d4), 1))
+    lon0 = math.radians(-75 + 3 * faja)
+    lon = lon0 + math.atan2(math.sinh(eta_p), math.cos(xi_p))
+    return math.degrees(lon), math.degrees(lat)
+
+
+def _area_anillo(r):
+    return sum(r[i][0] * r[i+1][1] - r[i+1][0] * r[i][1] for i in range(len(r) - 1)) / 2.0
+
+
+def _leer_shp(data):
+    """Devuelve lista de registros; cada uno = lista de anillos [(x,y),...] (polígonos)."""
+    tipo_arch = struct.unpack('<i', data[32:36])[0]
+    if tipo_arch not in (5, 15, 25):
+        raise ValueError('El shapefile no es de polígonos')
+    out, pos = [], 100
+    while pos + 8 <= len(data):
+        _, clen = struct.unpack('>ii', data[pos:pos+8]); pos += 8
+        cont = data[pos:pos+clen*2]; pos += clen * 2
+        t = struct.unpack('<i', cont[:4])[0]
+        if t == 0:
+            out.append([]); continue
+        npart, npts = struct.unpack('<ii', cont[36:44])
+        partes = list(struct.unpack('<%di' % npart, cont[44:44+4*npart]))
+        o = 44 + 4 * npart
+        pts = [struct.unpack('<2d', cont[o+16*i:o+16*i+16]) for i in range(npts)]
+        partes.append(npts)
+        out.append([pts[partes[i]:partes[i+1]] for i in range(npart)])
+    return out
+
+
+def _leer_dbf(data, enc='utf-8'):
+    n = struct.unpack('<I', data[4:8])[0]; hl, rl = struct.unpack('<HH', data[8:12])
+    campos, o = [], 32
+    while data[o] != 0x0D:
+        campos.append((data[o:o+11].split(b'\0')[0].decode('latin1'), chr(data[o+11]), data[o+16])); o += 32
+    filas = []
+    for i in range(n):
+        r = data[hl+i*rl+1: hl+(i+1)*rl]; p = 0; fila = {}
+        for nm, t, ln in campos:
+            v = r[p:p+ln]; p += ln
+            try:
+                s = v.decode(enc).strip()
+            except UnicodeDecodeError:
+                s = v.decode('latin1').strip()
+            if t in 'NF' and s:
+                try: s = float(s); s = int(s) if s == int(s) else s
+                except ValueError: pass
+            fila[nm] = s
+        filas.append(fila)
+    return [c[0] for c in campos], filas
+
+
+def _faja_de(prj_txt, x):
+    if prj_txt:
+        m = re.search(r'Central_Meridian["\s,]+(-?\d+(?:\.\d+)?)', prj_txt, re.I)
+        if m:
+            return int(round((float(m.group(1)) + 75) / 3))
+        m = re.search(r'Faja[_ ]?(\d)', prj_txt, re.I)
+        if m:
+            return int(m.group(1))
+    return int(abs(x) // 1e6)
+
+
+def _es_geografico(prj_txt, x):
+    if prj_txt:
+        return not re.search(r'PROJCS', prj_txt, re.I)
+    return abs(x) <= 360
+
+
+def _area_ha_lonlat(anillos):
+    """Área (ha) de anillos en lon/lat con proyección equirrectangular local."""
+    if not anillos or not anillos[0]:
+        return 0.0
+    lat0 = sum(p[1] for p in anillos[0]) / len(anillos[0])
+    kx = 111320.0 * math.cos(math.radians(lat0)); ky = 110574.0
+    return abs(sum(_area_anillo([(p[0]*kx, p[1]*ky) for p in r]) for r in anillos)) / 1e4
+
+
+def _elegir_atributo(campos, filas, pedido=None):
+    def unicos(c): return {f.get(c) for f in filas if f.get(c) not in ('', None)}
+    cand = [c for c in campos if 1 <= len(unicos(c)) <= 40]
+    if pedido and pedido in campos:
+        return pedido, cand
+    pref = re.compile(r'^(ambiente|amb|ambientes|nombre|name|clase|class|tipo|categoria|categoría|descripcion|descripción)$', re.I)
+    for c in cand:
+        if pref.match(c) and any(isinstance(v, str) for v in unicos(c)):
+            return c, cand
+    for c in cand:
+        if pref.match(c):
+            return c, cand
+    for c in cand:
+        if re.match(r'^(id|gridcode|grid_code|clase|cod|codigo|código)$', c, re.I):
+            return c, cand
+    return (cand[0] if cand else None), cand
+
+
+def leer_ambientes_propios(nombre_archivo, data, atributo=None):
+    """Devuelve {'atributo', 'candidatos', 'clases': [{'clave','ha','pct','poly'}], 'bbox'}.
+    poly = lista de polígonos [[anillo,...],...] en lon/lat, simplificados."""
+    ext = nombre_archivo.lower().rsplit('.', 1)[-1]
+    regs = []          # (clave_dict, anillos_lonlat)
+    campos, cand, attr_usado = [], [], None
+    if ext in ('kmz', 'kml'):
+        if ext == 'kmz':
+            z = zipfile.ZipFile(io.BytesIO(data))
+            nm = next(n for n in z.namelist() if n.lower().endswith('.kml'))
+            data = z.read(nm)
+        raiz = ET.fromstring(data)
+        def local(e): return e.tag.split('}')[-1]
+        for pm in raiz.iter():
+            if local(pm) != 'Placemark':
+                continue
+            nombre = next((((c.text or '').strip()) for c in pm if local(c) == 'name'), '')
+            polys = [p for p in pm.iter() if local(p) == 'Polygon']
+            for pg in polys:
+                anillos = []
+                for b in pg.iter():
+                    if local(b) in ('outerBoundaryIs', 'innerBoundaryIs'):
+                        for co in b.iter():
+                            if local(co) == 'coordinates' and co.text:
+                                pts = [tuple(float(v) for v in t.split(',')[:2]) for t in co.text.split() if ',' in t]
+                                if len(pts) >= 4:
+                                    anillos.append(pts)
+                if anillos:
+                    regs.append(({'nombre': nombre or 'Sin nombre'}, anillos))
+        campos = ['nombre']; attr_usado = 'nombre'; cand = ['nombre']
+    elif ext == 'zip':
+        z = zipfile.ZipFile(io.BytesIO(data))
+        nombres = z.namelist()
+        shp = next((n for n in nombres if n.lower().endswith('.shp')), None)
+        if not shp:
+            raise ValueError('El .zip no contiene un archivo .shp')
+        base = shp[:-4]
+        def buscar(e): return next((n for n in nombres if n.lower() == (base + e).lower()), None)
+        dbf, prj, cpg = buscar('.dbf'), buscar('.prj'), buscar('.cpg')
+        geoms = _leer_shp(z.read(shp))
+        enc = 'utf-8'
+        if cpg:
+            c = z.read(cpg).decode('latin1').strip().lower()
+            enc = 'latin1' if ('1252' in c or '8859' in c or 'latin' in c) else 'utf-8'
+        campos, filas = _leer_dbf(z.read(dbf), enc) if dbf else ([], [{} for _ in geoms])
+        prj_txt = z.read(prj).decode('latin1') if prj else ''
+        primero = next((r[0][0] for r in geoms if r and r[0]), (0, 0))
+        geo = _es_geografico(prj_txt, primero[0])
+        faja = None if geo else _faja_de(prj_txt, primero[0])
+        if not geo and not (1 <= faja <= 7):
+            raise ValueError('Sistema de coordenadas no soportado: exportá el shape en WGS84 (lat/lon) o POSGAR faja 1-7.')
+        attr_usado, cand = _elegir_atributo(campos, filas, atributo)
+        for rec, fila in zip(geoms, filas):
+            if not rec:
+                continue
+            if geo:
+                anillos = [list(r) for r in rec]
+            else:
+                anillos = [[_gk_inverso(x, y, faja) for x, y in r] for r in rec]
+            clave = fila.get(attr_usado, '') if attr_usado else ''
+            regs.append(({'clave': clave}, anillos))
+    else:
+        raise ValueError('Formato no soportado (usá .zip con el shapefile, .kmz o .kml)')
+
+    grupos = {}
+    for info, anillos in regs:
+        clave = info.get('clave', info.get('nombre'))
+        clave = '' if clave is None else clave
+        g = grupos.setdefault(str(clave), {'clave': clave, 'ha': 0.0, 'poly': []})
+        g['ha'] += _area_ha_lonlat(anillos)
+        g['poly'].extend(_polys_simplificados({'type': 'Polygon', 'coordinates': [[list(p) for p in r] for r in anillos]}))
+    if len(grupos) > 40:
+        raise ValueError('Demasiados ambientes distintos (%d): elegí otro campo de atributos' % len(grupos))
+    tot = sum(g['ha'] for g in grupos.values()) or 1
+    clases = []
+    xs, ys = [], []
+    for k, g in sorted(grupos.items(), key=lambda kv: (isinstance(kv[1]['clave'], str), kv[1]['clave'])):
+        for poly in g['poly']:
+            for p in poly[0]:
+                xs.append(p[0]); ys.append(p[1])
+        clases.append({'clave': g['clave'], 'ha': round(g['ha'], 2), 'pct': round(g['ha'] / tot * 100, 1), 'poly': g['poly']})
+    return {'atributo': attr_usado, 'candidatos': cand, 'clases': clases,
+            'bbox': [min(xs), min(ys), max(xs), max(ys)] if xs else None}
+
+
+@app.route('/ambientes_propios', methods=['POST'])
+def ambientes_propios():
+    """Lee los ambientes que dibujó Felipe (shapefile en .zip, .kmz o .kml) y devuelve polígonos + hectáreas por ambiente."""
+    try:
+        f = request.files['archivo']
+        res = leer_ambientes_propios(f.filename or 'archivo.zip', f.read(), request.form.get('atributo') or None)
+        return jsonify(res)
+    except Exception as e:
+        return jsonify({'error': f'No se pudo leer el archivo: {e}'}), 400
+
+
 @app.route('/proxy_img', methods=['POST'])
 def proxy_img():
     """Descarga una imagen generada por Earth Engine y la devuelve (para guardarla en el navegador).

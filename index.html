@@ -524,6 +524,9 @@ tr:last-child td { border-bottom: none; }
   text-align:center; text-decoration:none; display:block; min-width:0; }
 .dl-btn:active { background:var(--bg-panel); }
 .dl-btn:disabled { opacity:.6; cursor:wait; }
+.amb-row { display:grid; grid-template-columns:36px 1fr auto; gap:8px; align-items:center; margin:6px 0; }
+.amb-row input[type=color] { width:36px; height:32px; padding:0; border:1px solid var(--border); border-radius:6px; background:none; }
+.amb-row .ed-mut { white-space:nowrap; }
 .ge-item { display:grid; grid-template-columns:96px 1fr; gap:10px; margin-bottom:10px; align-items:center; }
 .ge-item img { width:96px; height:72px; object-fit:cover; border-radius:6px; border:1px solid var(--border); }
 .ge-f { display:grid; gap:6px; min-width:0; }
@@ -933,6 +936,21 @@ tr:last-child td { border-bottom: none; }
       <div class="dl-note" style="margin:0 0 8px;">Renombrá los ambientes. Si repetís un nombre, se agrupan (suman hectáreas) en el PDF.</div>
       <div id="amb-edit" style="margin-bottom:12px;"></div>
 
+      <div class="sec-title">Mapa de ambientes</div>
+      <div class="dl-note" style="margin:0 0 8px;">Dos formas de tener el mapa de ambientes en el informe. Podés usar una, otra o las dos.</div>
+      <div class="ed-box">
+        <div class="ed-h"><b>1 · Borrador automático</b></div>
+        <div class="ed-mut" style="margin-bottom:6px;">Un modelo entrenado con tus mapas propone los ambientes (Loma, Tendidos, Bajos, Cubetas, Montes). Las lomas y el agua son confiables; los ambientes intermedios son un borrador para revisar. Puede tardar 1 o 2 minutos.</div>
+        <button class="btn-sec full" id="btn-ia" onclick="generarAmbIA(this)">Generar borrador automático</button>
+        <div id="amb-ia-out"></div>
+      </div>
+      <div class="ed-box">
+        <div class="ed-h"><b>2 · Mis ambientes (shape o KMZ)</b></div>
+        <div class="ed-mut" style="margin-bottom:6px;">Subí el shapefile en un .zip (con .shp, .dbf y .prj), un .kmz o un .kml. Puede tener de 2 a 10 ambientes. Se dibujan con tus colores y salen en el informe.</div>
+        <input type="file" id="amb-file" accept=".zip,.kmz,.kml" onchange="cargarAmbPropios(this)">
+        <div id="amb-prop-out"></div>
+      </div>
+
       <div class="sec-title">Suelos — descripción por unidad</div>
       <div class="dl-note" style="margin:0 0 8px;">Opcional: perfil o descripción de cada unidad (sale en el PDF). Abajo de cada una se muestran los datos que trae el asset del INTA.</div>
       <div id="sue-edit" style="margin-bottom:12px;"></div>
@@ -986,7 +1004,7 @@ tr:last-child td { border-bottom: none; }
           <div class="ct-sub">Inmobiliaria Rural · Mercedes, BA</div>
           <div class="ct-sub" style="margin-top:2px;">Calle 23 N° 524 B · +54 9 11 3258 6146</div>
         </div>
-        <div class="ct-right">CT Satelital<br>Análisis remoto<br><span id="footer-fecha"></span><br><span style="opacity:.6">v3.8 · 24-oct-2026</span></div>
+        <div class="ct-right">CT Satelital<br>Análisis remoto<br><span id="footer-fecha"></span><br><span style="opacity:.6">v3.9 · 26-oct-2026</span></div>
       </div>
       <div style="height:8px;"></div>
     </div>
@@ -1503,7 +1521,7 @@ function mostrarResultado(campo) {
     </tr>`;
   }).join('') : '<tr><td colspan="5" style="text-align:center;color:var(--fg-3);padding:16px;">Sin datos</td></tr>';
 
-  renderEditores(campo); renderRefs(); renderLamBase();
+  renderEditores(campo); renderRefs(); renderLamBase(); renderAmbMapas();
 
   // Fotos
   const secF = document.getElementById('sec-fotos');
@@ -1749,6 +1767,8 @@ function renderRefs() {
         <input type="text" placeholder="Detalle" value="${attr(r.caption)}" oninput="resultData.refImages[${i}].caption=this.value;guardarDeb()">
         <label style="font-size:11px;display:flex;gap:6px;align-items:center;"><input type="checkbox" style="width:auto;" ${r.perimetro ? 'checked' : ''}
                onchange="resultData.refImages[${i}].perimetro=this.checked;guardarDeb()"> Dibujar perímetro</label>
+        ${resultData.ambPropios ? `<label style="font-size:11px;display:flex;gap:6px;align-items:center;"><input type="checkbox" style="width:auto;" ${r.ambPropios ? 'checked' : ''}
+               onchange="resultData.refImages[${i}].ambPropios=this.checked;guardarDeb()"> Dibujar mis ambientes</label>` : ''}
         <button class="dl-btn" onclick="resultData.refImages.splice(${i},1);guardarCampo();renderRefs();renderLamBase()">Quitar</button>
       </div>
     </div>`).join('');
@@ -1759,6 +1779,127 @@ function renderLamBase() {
   const refs = resultData.refImages || [];
   sel.innerHTML = `<option value="auto">Imagen de verano ${resultData.fecha_verano ? '(' + fechaCorta(resultData.fecha_verano) + ')' : ''} — automática</option>` +
     refs.map((r, i) => `<option value="${i}">${fechaCorta(r.fecha)} ${attr(r.caption)}</option>`).join('');
+}
+
+/* ── Mapa de ambientes: borrador automático (1) y ambientes propios (2) ── */
+const AMB_STD = { 'loma': '#267300', 'tendido alto': '#70A800', 'tendido bajo': '#FFD37F', 'bajos encharcables': '#FFFFBE',
+                  'cubetas y lagunas semipermanentes': '#73DFFF', 'montes y construcciones': '#730000' };
+const AMB_STD_NUM = ['Loma', 'Tendido alto', 'Tendido bajo', 'Bajos encharcables', 'Cubetas y lagunas semipermanentes', 'Montes y construcciones'];
+const AMB_PAL = ['#267300', '#70A800', '#FFD37F', '#FFFFBE', '#73DFFF', '#730000', '#9C27B0', '#FF9800', '#009688', '#795548'];
+const normNom = s => String(s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+function colorAmb(nombre, i) {
+  const n = normNom(nombre);
+  if (AMB_STD[n]) return AMB_STD[n];
+  if (n.startsWith('cubeta')) return AMB_STD['cubetas y lagunas semipermanentes'];
+  if (n.startsWith('monte')) return AMB_STD['montes y construcciones'];
+  if (n.startsWith('bajo')) return AMB_STD['bajos encharcables'];
+  return AMB_PAL[i % AMB_PAL.length];
+}
+function ambNombre(c, i) {
+  const n = (c.nombre || '').trim();
+  if (n) return n;
+  return 'Ambiente ' + ((c.clave !== '' && c.clave != null) ? c.clave : (i + 1));
+}
+function bboxCampo(d, m) {
+  m = m == null ? 0.12 : m;
+  let w = 1e9, s = 1e9, e = -1e9, n = -1e9;
+  polysDe(d.geojson).forEach(poly => poly[0].forEach(p => { w = Math.min(w, p[0]); e = Math.max(e, p[0]); s = Math.min(s, p[1]); n = Math.max(n, p[1]); }));
+  if (w > e && d.ambPropios && d.ambPropios.bbox) [w, s, e, n] = d.ambPropios.bbox;
+  const mx = (e - w) * m, my = (n - s) * m;
+  return [w - mx, s - my, e + mx, n + my];
+}
+function svgAmbPropios(d, P, o) {
+  const ap = d.ambPropios; if (!ap) return '';
+  let s = '';
+  ap.clases.forEach(c => c.poly.forEach(poly => {
+    s += `<path d="${pathDe(poly, P)}" fill="${o.relleno ? c.color : 'none'}" fill-rule="evenodd" stroke="${o.trazoColor}" stroke-width="${o.trazo}" stroke-linejoin="round"/>`;
+  }));
+  return s;
+}
+function mapaAmbHTML(d) {
+  const P = proyector(bboxCampo(d));
+  let svg = svgAmbPropios(d, P, { relleno: true, trazoColor: '#6b6b6b', trazo: 0.8 });
+  for (const poly of polysDe(d.geojson)) svg += `<path d="${pathDe(poly, P)}" fill="none" stroke="#444" stroke-width="1.2" fill-rule="evenodd" stroke-linejoin="round"/>`;
+  return `<div style="position:relative;width:100%;aspect-ratio:1000/${P.H.toFixed(1)};background:#fff;">
+    <svg viewBox="0 0 1000 ${P.H.toFixed(1)}" preserveAspectRatio="none" style="position:absolute;left:0;top:0;width:100%;height:100%;">${svg}</svg></div>`;
+}
+
+let _ambFile = null;
+async function cargarAmbPropios(inp, atributo) {
+  const f = (inp && inp.files && inp.files[0]) || _ambFile;
+  if (!f) return;
+  _ambFile = f;
+  const out = document.getElementById('amb-prop-out');
+  out.innerHTML = '<div class="dl-note">Leyendo archivo…</div>';
+  try {
+    const fd = new FormData(); fd.append('archivo', f); if (atributo) fd.append('atributo', atributo);
+    const r = await fetch(backendBase() + '/ambientes_propios', { method: 'POST', body: fd });
+    let j = {}; try { j = await r.json(); } catch {}
+    if (!r.ok || j.error) throw new Error(j.error || ('HTTP ' + r.status));
+    const prev = (resultData.ambPropios && resultData.ambPropios.atributo === j.atributo) ? resultData.ambPropios.clases : [];
+    j.clases.forEach((c, i) => {
+      const p = prev.find(x => String(x.clave) === String(c.clave));
+      c.nombre = p ? p.nombre : (typeof c.clave === 'string' ? c.clave : '');
+      c.color  = p ? p.color  : colorAmb(c.nombre, i);
+    });
+    resultData.ambPropios = j; guardarCampo(); renderAmbMapas(); renderRefs();
+    showToast('Ambientes cargados: ' + j.clases.length);
+  } catch (e) { renderAmbMapas(); showToast('⚠️ ' + e.message); }
+}
+function ambPropioSet(i, k, v) { resultData.ambPropios.clases[i][k] = v; guardarDeb(); }
+function ambPropioEstandar() {
+  const ap = resultData.ambPropios; if (!ap) return;
+  ap.clases.forEach((c, i) => { const k = parseInt(c.clave, 10); if (k >= 1 && k <= 6) { c.nombre = AMB_STD_NUM[k - 1]; c.color = colorAmb(c.nombre, i); } });
+  guardarCampo(); renderAmbMapas();
+}
+function ambPropioQuitar() { delete resultData.ambPropios; guardarCampo(); renderAmbMapas(); renderRefs(); }
+function renderAmbMapas() {
+  const d = resultData; if (!d) return;
+  const outP = document.getElementById('amb-prop-out'), outI = document.getElementById('amb-ia-out');
+  if (!outP || !outI) return;
+  const ap = d.ambPropios;
+  if (!ap) { outP.innerHTML = ''; }
+  else {
+    const numerico = ap.clases.some(c => typeof c.clave === 'number');
+    outP.innerHTML = `
+      <div class="dl-note" style="margin:6px 0;">Se usó el campo <b>${txt(ap.atributo || '—')}</b> del archivo.
+        ${(ap.candidatos || []).length > 1 ? ` · Cambiar: <select onchange="cargarAmbPropios(null, this.value)" style="width:auto;">${ap.candidatos.map(c => `<option ${c === ap.atributo ? 'selected' : ''}>${txt(c)}</option>`).join('')}</select>` : ''}</div>
+      ${ap.clases.map((c, i) => `<div class="amb-row">
+        <input type="color" value="${attr(c.color)}" onchange="ambPropioSet(${i},'color',this.value)">
+        <input type="text" placeholder="${attr('Ambiente ' + c.clave)}" value="${attr(c.nombre)}" oninput="ambPropioSet(${i},'nombre',this.value)">
+        <span class="ed-mut">${c.ha.toFixed(1)} ha · ${c.pct.toFixed(1)}%</span></div>`).join('')}
+      <div class="res-btns" style="margin-top:8px;">
+        ${numerico ? '<button class="btn-sec" onclick="ambPropioEstandar()">Nombres estándar (1 a 6)</button>' : ''}
+        <button class="btn-sec accent" onclick="generarLaminaAmb(this)">🗺️ Lámina de ambientes (PDF)</button>
+        <button class="btn-sec" onclick="ambPropioQuitar()">Quitar</button>
+      </div>`;
+  }
+  const ia = d.ambIA;
+  outI.innerHTML = (ia && ia.url) ? `
+    <img src="${attr(ia.url)}" alt="" style="width:100%;background:#fff;border-radius:8px;border:1px solid var(--border);margin-top:8px;aspect-ratio:auto;">
+    ${(ia.ambientes || []).map(a => `<div class="amb-row" style="grid-template-columns:36px 1fr auto;"><span style="width:36px;height:20px;border:1px solid #888;background:${attr(a.color)};display:block;"></span>
+      <span>${txt(a.nombre)}</span><span class="ed-mut">${a.ha.toFixed(1)} ha · ${a.pct.toFixed(1)}%</span></div>`).join('')}
+    <button class="btn-sec" style="margin-top:6px;" onclick="delete resultData.ambIA;guardarCampo();renderAmbMapas()">Quitar</button>` : '';
+}
+async function generarAmbIA(btn) {
+  const d = resultData;
+  if (!d || !d.geojson) { showToast('Este campo se analizó antes de esta función — volvé a analizarlo'); return; }
+  const orig = btn.textContent; btn.disabled = true; btn.textContent = 'Clasificando… (1-2 min)';
+  try {
+    const fd = new FormData(); fd.append('geojson', JSON.stringify(d.geojson)); fd.append('modelo', 'v3');
+    const r = await fetch(backendBase() + '/ambientes_ia', { method: 'POST', body: fd });
+    let j = {}; try { j = await r.json(); } catch {}
+    if (!r.ok || j.error) throw new Error(j.error || ('HTTP ' + r.status));
+    j.url = await embedUrl(j.url);
+    d.ambIA = j; guardarCampo(); renderAmbMapas();
+    showToast('Borrador listo');
+  } catch (e) { showToast('⚠️ ' + e.message); }
+  finally { btn.disabled = false; btn.textContent = orig; }
+}
+function generarLaminaAmb(btn) {
+  const d = resultData;
+  if (!d || !d.ambPropios) return;
+  imprimirHTML(laminaHTML(d, { url: '', bbox: bboxCampo(d, 0.06), fecha: '' }, { ambientes: true }), 'Ambientes_' + (d.nombre || 'campo'));
 }
 
 /* ── Proyección lon/lat → imagen (Web Mercator, la de las miniaturas de GEE) ── */
@@ -1807,6 +1948,7 @@ function mapaConCapas(ref, d, opts) {
       }
     }
   }
+  if (opts.ambPropios && d.ambPropios) svg += svgAmbPropios(d, P, { relleno: false, trazoColor: '#FFD400', trazo: opts.trazoA || 1.8 });
   if (opts.perimetro) {
     for (const poly of polysDe(d.geojson))
       svg += `<path d="${pathDe(poly, P)}" fill="none" stroke="#FFD400" stroke-width="${opts.trazoP || 3}" fill-rule="evenodd" stroke-linejoin="round"/>`;
@@ -1822,7 +1964,14 @@ function mapaHTML(ref, d, opts) {
 
 /* ── Lámina estilo informe (A4 horizontal) ── */
 function laminaHTML(d, ref, opts) {
-  const { P, svg } = mapaConCapas(ref, d, { perimetro: true, unidades: opts.unidades, trazoP: 3.2, trazoU: 1.8, fuente: 24 });
+  let P, svg;
+  if (opts.ambientes) {
+    P = proyector(ref.bbox);
+    svg = svgAmbPropios(d, P, { relleno: true, trazoColor: '#6b6b6b', trazo: 0.9 });
+    for (const poly of polysDe(d.geojson)) svg += `<path d="${pathDe(poly, P)}" fill="none" stroke="#444" stroke-width="1.4" fill-rule="evenodd" stroke-linejoin="round"/>`;
+  } else {
+    ({ P, svg } = mapaConCapas(ref, d, { perimetro: true, unidades: opts.unidades, trazoP: 3.2, trazoU: 1.8, fuente: 24 }));
+  }
   const PW = 1120, PH = 790, SB = 215;
   const paneW = PW - SB, paneH = PH;
   const bw = Math.min(paneW, paneH * 1000 / P.H), bh = bw * P.H / 1000;
@@ -1851,10 +2000,11 @@ html,body{width:${PW}px;height:${PH}px;overflow:hidden;background:#fff;font-fami
 .scale{font-size:11px;}
 </style></head><body><div class="sheet">
 <div class="side">
-  <div class="t1">"${nombre}"<br>Imagen Sentinel<br>${fechaLarga(ref.fecha)}</div>
+  <div class="t1">${opts.ambientes ? `"${nombre}"<br>Ambientes` : `"${nombre}"<br>Imagen Sentinel<br>${fechaLarga(ref.fecha)}`}</div>
   <svg class="north" width="44" height="52" viewBox="0 0 44 52"><path d="M22 4 L32 40 L22 33 L12 40 Z" fill="#000"/><path d="M22 4 L22 33 L12 40 Z" fill="#fff" stroke="#000" stroke-width="1"/><text x="22" y="51" text-anchor="middle" font-size="10" font-weight="700" font-family="Arial">N</text></svg>
   <div class="leg">
-    <div class="leg-r"><span class="sw" style="background:none;"></span><span>${nombre}</span></div>
+    ${opts.ambientes ? ((d.ambPropios && d.ambPropios.clases) || []).map((c, i) => `<div class="leg-r"><span class="sw" style="background:${c.color};border:1px solid #555;"></span><span>${txt(ambNombre(c, i))}<br><span style="color:#555;font-size:10px;">${c.ha.toFixed(1)} ha</span></span></div>`).join('')
+      : `<div class="leg-r"><span class="sw" style="background:none;"></span><span>${nombre}</span></div>`}
     ${opts.unidades ? '<div class="leg-r"><span style="font-weight:700;color:#b58a00;width:26px;text-align:center;">24,4</span><span>Superficie por unidad (ha)</span></div>' : ''}
   </div>
   <div class="logo"><img src="https://ctinmobiliariarural.com/img/logo-blanco.png" alt="CT" onerror="this.style.display='none'"></div>
@@ -1868,7 +2018,7 @@ html,body{width:${PW}px;height:${PH}px;overflow:hidden;background:#fff;font-fami
   </div>
 </div>
 <div class="map"><div style="position:relative;width:${bw.toFixed(1)}px;height:${bh.toFixed(1)}px;border:0;">
-  <img src="${attr(ref.url)}" alt="" style="position:absolute;left:0;top:0;width:100%;height:100%;display:block;">
+  ${opts.ambientes ? '' : `<img src="${attr(ref.url)}" alt="" style="position:absolute;left:0;top:0;width:100%;height:100%;display:block;">`}
   <svg viewBox="0 0 1000 ${P.H.toFixed(1)}" preserveAspectRatio="none" style="position:absolute;left:0;top:0;width:100%;height:100%;">${svg}</svg>
 </div></div>
 </div></body></html>`;
@@ -2011,10 +2161,21 @@ function exportarPDF() {
       <p style="font-size:12px;line-height:1.65;color:#3A3F35;">${txt(s.perfil).replace(/\n/g,'<br>')}</p></div>`).join('');
 
   const refHTML = (d.refImages || []).map(r =>
-    `<div class="map-box">${mapaHTML(r, d, { perimetro: !!r.perimetro, unidades: false, trazoP: 2.5 })}
+    `<div class="map-box">${mapaHTML(r, d, { perimetro: !!r.perimetro, unidades: false, trazoP: 2.5, ambPropios: !!r.ambPropios })}
       <div class="ml" style="text-transform:none;letter-spacing:.2px;">Imagen satelital del ${fechaCorta(r.fecha)}${r.caption ? ' (' + txt(r.caption) + ')' : ''}</div></div>`).join('');
 
   const mapRow = (url, label, leg) => `<div class="map-row">${imgFn(url, '', label)}${leg}</div>`;
+
+  const ap = d.ambPropios;
+  const apSec = (ap && ap.clases && ap.clases.length) ? `<h2>Mapa de ambientes</h2>
+<div class="map-row"><div class="map-box">${mapaAmbHTML(d)}<div class="ml">Ambientes del campo</div></div>
+${legBox('Ambientes', ap.clases.map((c, i) => legItem(c.color, `<b>${txt(ambNombre(c, i))}</b> · ${c.ha.toFixed(1)} ha (${c.pct.toFixed(1)}%)`)).join(''))}</div>
+<table><thead><tr><th>Ambiente</th><th>Hectáreas</th><th>% del campo</th></tr></thead>
+<tbody>${ap.clases.map((c, i) => `<tr><td><b>${txt(ambNombre(c, i))}</b></td><td>${c.ha.toFixed(1)}</td><td>${c.pct.toFixed(1)}%</td></tr>`).join('')}</tbody></table>` : '';
+  const iaSec = (d.ambIA && d.ambIA.url) ? `<h2>Ambientes — borrador automático</h2>
+<div class="map-row">${imgFn(d.ambIA.url, '', 'Borrador automático de ambientes')}
+${legBox('Ambientes (borrador)', (d.ambIA.ambientes || []).map(a => legItem(a.color, `<b>${txt(a.nombre)}</b> · ${a.ha.toFixed(1)} ha (${a.pct.toFixed(1)}%)`)).join(''),
+  'Borrador generado con un modelo entrenado con mapas de ambientes. Lomas y agua son confiables; los ambientes intermedios requieren revisión.')}</div>` : '';
 
   const legGe = (tipo) => {
     if (tipo === 'ambientes') return legBox('Ambientes',
@@ -2207,7 +2368,7 @@ tr:nth-child(even) td{background:#F9FBF8;}
       <div class="cv-sl">Ambientes</div>
     </div>
     <div class="cv-stat">
-      ${pr?`<div class="cv-sv cv-price" style="${pr.valor.length > 12 ? 'font-size:17px;' : ''}">${pr.valor}</div><div class="cv-sl">Precio pedido${pr.tipoTxt ? ' · ' + pr.tipoTxt : ''}</div>`
+      ${pr?`<div class="cv-sv cv-price" style="white-space:nowrap;${pr.valor.length > 16 ? 'font-size:15px;' : pr.valor.length > 12 ? 'font-size:18px;' : ''}">${pr.valor}</div><div class="cv-sl">Precio pedido${pr.tipoTxt ? ' · ' + pr.tipoTxt : ''}</div>`
                :`<div class="cv-sv">${d.anio||2024}</div><div class="cv-sl">Año análisis</div>`}
     </div>
   </div>
@@ -2253,6 +2414,9 @@ ${ambRows ? `
   <thead><tr><th>Ambiente</th><th>Hectáreas</th><th>% del campo</th><th>NDVI prom.</th>${hayDesc?'<th>Descripción</th>':''}</tr></thead>
   <tbody>${ambRows}</tbody>
 </table>` : ''}
+
+${apSec}
+${iaSec}
 
 <h2>Suelos INTA y Topografía</h2>
 ${mapRow(d.url_suelos,    'Suelos INTA 1:50.000', legSue)}
