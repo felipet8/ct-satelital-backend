@@ -999,6 +999,13 @@ def ambientes_ia():
         tot = sum(ha.values())
         if not tot:
             return jsonify({'error': 'No se pudo clasificar este campo (sin imágenes Sentinel-2 válidas). Probá de nuevo.'}), 500
+        # Se descarga la imagen acá y se devuelve incrustada (así no depende de permisos del navegador)
+        import urllib.request, base64
+        with urllib.request.urlopen(url, timeout=90) as r:
+            png = r.read()
+        if not png.startswith(b'\x89PNG'):
+            return jsonify({'error': 'Earth Engine no devolvió una imagen: ' + png[:200].decode('utf-8', 'ignore')}), 500
+        url = 'data:image/png;base64,' + base64.b64encode(png).decode()
         return jsonify({
             'url': url, 'bbox': bbox,
             'ambientes': [{'id': k, 'nombre': AMB_IA[k][0], 'color': AMB_IA[k][1],
