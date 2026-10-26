@@ -1710,7 +1710,7 @@ async function agregarRef(btn) {
     const j = await pedirImagen(fecha, document.getElementById('ref-modo').value, 1000);
     (resultData.refImages = resultData.refImages || []).push({
       url: await embedUrl(j.url), fecha: j.fecha, bbox: j.bbox, modo: j.modo, fuente: j.fuente,
-      caption: document.getElementById('ref-cap').value.trim(), perimetro: true });
+      caption: document.getElementById('ref-cap').value.trim(), perimetro: !resultData.ambPropios, ambPropios: !!resultData.ambPropios });
     guardarCampo(); renderRefs(); renderLamBase();
     showToast(j.fecha === fecha ? 'Imagen agregada' : 'Imagen más cercana: ' + fechaCorta(j.fecha));
   } catch (e) { showToast('⚠️ ' + e.message); }
@@ -1747,7 +1747,7 @@ async function agregarVariosAnios(btn) {
       if (!r.ok || j.error) throw new Error(j.error || ('HTTP ' + r.status));
       (resultData.refImages = resultData.refImages || []).push({
         url: await embedUrl(j.url), fecha: j.fecha, bbox: j.bbox, modo: j.modo, fuente: j.fuente,
-        caption: (e === 'verano' ? 'Verano ' : 'Invierno ') + a, perimetro: true });
+        caption: (e === 'verano' ? 'Verano ' : 'Invierno ') + a, perimetro: !resultData.ambPropios, ambPropios: !!resultData.ambPropios });
       ok++; guardarCampo(); renderRefs(); renderLamBase();
     } catch (err) { fallos.push(`${e} ${a}`); }
   }
@@ -1766,9 +1766,9 @@ function renderRefs() {
         <div class="ed-mut"><b>${fechaCorta(r.fecha)}</b> · ${r.modo === 'real' ? 'color real' : 'falso color'}${r.fuente === 'TOA' ? ' · sin corrección atmosférica' : ''}</div>
         <input type="text" placeholder="Detalle" value="${attr(r.caption)}" oninput="resultData.refImages[${i}].caption=this.value;guardarDeb()">
         <label style="font-size:11px;display:flex;gap:6px;align-items:center;"><input type="checkbox" style="width:auto;" ${r.perimetro ? 'checked' : ''}
-               onchange="resultData.refImages[${i}].perimetro=this.checked;guardarDeb()"> Dibujar perímetro</label>
+               onchange="resultData.refImages[${i}].perimetro=this.checked;if(this.checked)resultData.refImages[${i}].ambPropios=false;guardarDeb();renderRefs()"> Dibujar perímetro</label>
         ${resultData.ambPropios ? `<label style="font-size:11px;display:flex;gap:6px;align-items:center;"><input type="checkbox" style="width:auto;" ${r.ambPropios ? 'checked' : ''}
-               onchange="resultData.refImages[${i}].ambPropios=this.checked;guardarDeb()"> Dibujar mis ambientes</label>` : ''}
+               onchange="resultData.refImages[${i}].ambPropios=this.checked;if(this.checked)resultData.refImages[${i}].perimetro=false;guardarDeb();renderRefs()"> Dibujar mis ambientes (en vez del perímetro)</label>` : ''}
         <button class="dl-btn" onclick="resultData.refImages.splice(${i},1);guardarCampo();renderRefs();renderLamBase()">Quitar</button>
       </div>
     </div>`).join('');
