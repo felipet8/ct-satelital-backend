@@ -915,9 +915,16 @@ def entrenar_ambientes(excluir_campo=None, n_por_clase=500, version='v2'):
             g = fc.filter(ee.Filter.eq('campo', c)).geometry()
             imgs.append(normalizar_por_campo(pila, g).clip(g).toFloat())
         pila_train = ee.ImageCollection(imgs).mosaic()
-    muestra = pila_train.addBands(clase_img).stratifiedSample(
-        numPoints=n_por_clase, classBand='clase', region=entren.geometry(),
-        scale=20, seed=7, dropNulls=True, tileScale=4)
+    clave_m = ('muestra', version, n_por_clase)
+    if excluir_campo is None and clave_m in _CAMPOS_CACHE:
+        muestra = _CAMPOS_CACHE[clave_m]          # ya calculada: el entrenamiento no repite todo el cálculo de Earth Engine
+    else:
+        muestra = pila_train.addBands(clase_img).stratifiedSample(
+            numPoints=n_por_clase, classBand='clase', region=entren.geometry(),
+            scale=20, seed=7, dropNulls=True, tileScale=4)
+        if excluir_campo is None:
+            muestra = ee.FeatureCollection(muestra.getInfo()['features'])   # se guarda como datos simples
+            _CAMPOS_CACHE[clave_m] = muestra
     clf = ee.Classifier.smileRandomForest(150, seed=7).train(muestra, 'clase', bandas)
     return clf, pila, fc
 
