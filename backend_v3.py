@@ -199,7 +199,7 @@ def get_thumb_url(image, region, vis_params):
     else:
         region_param = region
     return image.getThumbURL({
-        'dimensions': '700x700',
+        'dimensions': 800,   # un solo número = lado mayor; así no se deforma el campo
         'region':     region_param,
         'format':     'png',   # PNG: fuera del campo queda transparente (fondo blanco en la app/PDF)
         **vis_params
