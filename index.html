@@ -1908,10 +1908,104 @@ function renderAmbMapas() {
           ${gr.filter(x => x.id !== a.id).map(x => `<option value="${x.id}">${txt(x.nombre || 'Ambiente ' + x.id)}</option>`).join('')}</select></div>` : ''}`;
     }).join('')}
     <div class="res-btns" style="margin-top:6px;">
+      <button class="btn-sec accent" onclick="abrirEditorZonas()">✏️ Editar zonas en el mapa</button>
       <button class="btn-sec" onclick="ambIAEstandar()">Nombres estándar</button>
       <button class="btn-sec" onclick="delete resultData.ambIA;guardarCampo();renderAmbMapas()">Quitar</button></div>`;
   } else outI.innerHTML = '';
 }
+/* ── Editor de zonas: dibujar un polígono sobre el mapa y pasar esa parte a otro ambiente ── */
+async function ambIAPintar(ia, pts, dest, origenIds) {
+  const img = await cargarImg(ia.raw), w = img.width, h = img.height;
+  const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
+  const cx = cv.getContext('2d', { willReadFrequently: true }); cx.drawImage(img, 0, 0);
+  const id = cx.getImageData(0, 0, w, h), px = id.data, pal = AMB_IA_HEX.map(hexRgb);
+  const mk = document.createElement('canvas'); mk.width = w; mk.height = h;
+  const mx = mk.getContext('2d', { willReadFrequently: true }); mx.fillStyle = '#000'; mx.beginPath();
+  pts.forEach((p, i) => i ? mx.lineTo(p[0], p[1]) : mx.moveTo(p[0], p[1])); mx.closePath(); mx.fill();
+  const m = mx.getImageData(0, 0, w, h).data, cuenta = new Array(pal.length + 1).fill(0);
+  for (let i = 0; i < w * h; i++) {
+    if (px[i * 4 + 3] < 128) continue;
+    let best = 0, bd = 1e9;
+    for (let k = 0; k < pal.length; k++) { const d = (px[i*4]-pal[k][0])**2 + (px[i*4+1]-pal[k][1])**2 + (px[i*4+2]-pal[k][2])**2; if (d < bd) { bd = d; best = k; } }
+    let c = best + 1;
+    if (m[i * 4 + 3] > 127 && (!origenIds || origenIds.includes(c))) { c = dest; px[i*4] = pal[dest-1][0]; px[i*4+1] = pal[dest-1][1]; px[i*4+2] = pal[dest-1][2]; }
+    cuenta[c]++;
+  }
+  cx.putImageData(id, 0, 0);
+  const total = cuenta.reduce((a, b) => a + b, 0) || 1, haTot = ia.ambientes.reduce((s, a) => s + a.ha, 0);
+  if (!ia.ambientes.some(a => a.id === dest)) ia.ambientes.push({ id: dest, nombre: '', color: AMB_IA_HEX[dest - 1], ha: 0, pct: 0 });
+  ia.ambientes = ia.ambientes.filter(a => cuenta[a.id] > 0);
+  ia.ambientes.forEach(a => { a.ha = cuenta[a.id] / total * haTot; a.pct = cuenta[a.id] / total * 100; });
+  ia.ambientes.forEach(a => { if (a.grupo && !ia.ambientes.some(x => x.id === a.grupo)) a.grupo = a.id; });
+  ia.ambientes.sort((a, b) => a.id - b.id);
+  ia.raw = cv.toDataURL('image/png');
+  ia.url = await colorearAmbIA(ia);
+}
+const _ed = { pts: [], undo: [], img: null };
+function abrirEditorZonas() {
+  const ia = resultData.ambIA; if (!ia) return;
+  _ed.pts = []; _ed.undo = [];
+  const o = document.createElement('div'); o.id = 'ed-zonas';
+  o.style.cssText = 'position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.6);display:flex;align-items:flex-start;justify-content:center;overflow:auto;padding:12px;';
+  o.innerHTML = `<div style="background:var(--bg-card);color:var(--fg);border-radius:12px;padding:12px;max-width:900px;width:100%;box-sizing:border-box;">
+    <div style="font-weight:600;margin-bottom:4px;">Editar zonas</div>
+    <div class="dl-note" style="margin:0 0 8px;">Tocá el mapa para marcar los puntos de un contorno alrededor de la parte que querés cambiar. Después elegí a qué ambiente pasa y tocá "Aplicar".</div>
+    <div style="position:relative;"><canvas id="ed-cv" style="width:100%;height:auto;display:block;background:#fff;border:1px solid #bbb;border-radius:8px;touch-action:manipulation;cursor:crosshair;"></canvas></div>
+    <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:8px;">
+      <label style="font-size:12px;">Pasar a: <select id="ed-dest" style="width:auto;"></select></label>
+      <label style="font-size:12px;">Solo lo que hoy es: <select id="ed-orig" style="width:auto;"></select></label>
+    </div>
+    <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;">
+      <button class="btn-sec accent" id="ed-ap" onclick="edAplicar()">Aplicar</button>
+      <button class="btn-sec" onclick="edQuitarPunto()">Quitar último punto</button>
+      <button class="btn-sec" onclick="_ed.pts=[];edDibujar()">Borrar contorno</button>
+      <button class="btn-sec" onclick="edDeshacer()">Deshacer cambio</button>
+      <button class="btn-sec" onclick="cerrarEditorZonas()">Listo</button>
+    </div></div>`;
+  document.body.appendChild(o);
+  edCombos();
+  cargarImg(ia.url).then(im => { _ed.img = im; const cv = document.getElementById('ed-cv'); cv.width = im.width; cv.height = im.height; edDibujar(); });
+  document.getElementById('ed-cv').addEventListener('click', e => {
+    const cv = e.currentTarget, r = cv.getBoundingClientRect();
+    _ed.pts.push([(e.clientX - r.left) * cv.width / r.width, (e.clientY - r.top) * cv.height / r.height]); edDibujar();
+  });
+}
+function edCombos() {
+  const ia = resultData.ambIA, gr = gruposIA(ia);
+  const libres = []; for (let k = 1; k <= AMB_IA_HEX.length; k++) if (!ia.ambientes.some(a => a.id === k)) libres.push(k);
+  document.getElementById('ed-dest').innerHTML = ia.ambientes.map(a => `<option value="${a.id}">${txt(a.nombre || 'Ambiente ' + a.id)}</option>`).join('')
+    + (libres.length ? `<option value="${libres[0]}">➕ Zona nueva</option>` : '');
+  document.getElementById('ed-orig').innerHTML = '<option value="0">Cualquier ambiente</option>' + ia.ambientes.map(a => `<option value="${a.id}">${txt(a.nombre || 'Ambiente ' + a.id)}</option>`).join('');
+}
+function edDibujar() {
+  const cv = document.getElementById('ed-cv'); if (!cv || !_ed.img) return;
+  const cx = cv.getContext('2d'); cx.clearRect(0, 0, cv.width, cv.height); cx.fillStyle = '#fff'; cx.fillRect(0, 0, cv.width, cv.height);
+  cx.drawImage(_ed.img, 0, 0);
+  const p = _ed.pts, s = Math.max(2, cv.width / 300);
+  if (p.length) {
+    cx.beginPath(); p.forEach((q, i) => i ? cx.lineTo(q[0], q[1]) : cx.moveTo(q[0], q[1])); if (p.length > 2) cx.closePath();
+    if (p.length > 2) { cx.fillStyle = 'rgba(255,255,255,.35)'; cx.fill(); }
+    cx.lineWidth = s; cx.strokeStyle = '#e91e63'; cx.stroke();
+    p.forEach(q => { cx.beginPath(); cx.arc(q[0], q[1], s * 1.6, 0, 7); cx.fillStyle = '#e91e63'; cx.fill(); });
+  }
+}
+function edQuitarPunto() { _ed.pts.pop(); edDibujar(); }
+async function edAplicar() {
+  const ia = resultData.ambIA;
+  if (_ed.pts.length < 3) { showToast('Marcá al menos 3 puntos alrededor de la zona'); return; }
+  const dest = +document.getElementById('ed-dest').value, o = +document.getElementById('ed-orig').value;
+  const origen = o ? ia.ambientes.filter(a => (a.grupo || a.id) === ((ia.ambientes.find(x => x.id === o).grupo) || o)).map(a => a.id) : null;
+  _ed.undo.push(JSON.stringify({ raw: ia.raw, ambientes: ia.ambientes }));
+  await ambIAPintar(ia, _ed.pts, dest, origen);
+  _ed.pts = []; _ed.img = await cargarImg(ia.url); edCombos(); edDibujar(); guardarCampo(); renderAmbMapas();
+}
+async function edDeshacer() {
+  const u = _ed.undo.pop(); if (!u) return;
+  const ia = resultData.ambIA, s = JSON.parse(u); ia.raw = s.raw; ia.ambientes = s.ambientes;
+  ia.url = await colorearAmbIA(ia); _ed.img = await cargarImg(ia.url); edCombos(); edDibujar(); guardarCampo(); renderAmbMapas();
+}
+function cerrarEditorZonas() { const o = document.getElementById('ed-zonas'); if (o) o.remove(); guardarCampo(); renderAmbMapas(); }
+
 /* Grupos efectivos: cada zona puede estar unida a otra (a.grupo = id de la zona principal) */
 function gruposIA(ia) {
   const raiz = a => (a.grupo && a.grupo !== a.id) ? a.grupo : a.id;
@@ -1931,7 +2025,7 @@ async function ambIAUnir(i, destino) {
   } else a.grupo = a.id;
   ia.url = await colorearAmbIA(ia); guardarCampo(); renderAmbMapas();
 }
-const AMB_IA_HEX = ['#267300', '#70A800', '#FFD37F', '#FFFFBE', '#73DFFF', '#730000'];
+const AMB_IA_HEX = ['#267300', '#70A800', '#FFD37F', '#FFFFBE', '#73DFFF', '#730000', '#9C27B0', '#FF9800', '#009688', '#795548'];
 const hexRgb = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
 let _recT = null;
 function ambIASet(i, k, v) {
@@ -1953,7 +2047,7 @@ async function colorearAmbIA(ia) {
   for (let i = 0; i < w * h; i++) {
     if (px[i * 4 + 3] < 128) continue;
     let best = 0, bd = 1e9;
-    for (let k = 0; k < 6; k++) { const d = (px[i*4]-pal[k][0])**2 + (px[i*4+1]-pal[k][1])**2 + (px[i*4+2]-pal[k][2])**2; if (d < bd) { bd = d; best = k; } }
+    for (let k = 0; k < pal.length; k++) { const d = (px[i*4]-pal[k][0])**2 + (px[i*4+1]-pal[k][1])**2 + (px[i*4+2]-pal[k][2])**2; if (d < bd) { bd = d; best = k; } }
     cls[i] = best + 1;
   }
   const anchoM = ia.bbox ? (ia.bbox[2] - ia.bbox[0]) * 111320 * Math.cos(((ia.bbox[1] + ia.bbox[3]) / 2) * Math.PI / 180) : 0;
@@ -1971,7 +2065,7 @@ async function colorearAmbIA(ia) {
     }
   };
   const mejor = new Float32Array(w * h).fill(-1), eleg = new Uint8Array(w * h);
-  for (let k = 1; k <= 6; k++) {
+  for (let k = 1; k <= AMB_IA_HEX.length; k++) {
     if (!(ia.ambientes || []).some(a => a.id === k)) continue;
     const gk = ((ia.ambientes.find(a => a.id === k) || {}).grupo) || k;
     if (gk !== k) continue;                                  // las zonas unidas se procesan junto a su zona principal
