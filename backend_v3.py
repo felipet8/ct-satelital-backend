@@ -923,7 +923,7 @@ def entrenar_ambientes(excluir_campo=None, n_por_clase=500, version='v2'):
             numPoints=n_por_clase, classBand='clase', region=entren.geometry(),
             scale=20, seed=7, dropNulls=True, tileScale=4)
         if excluir_campo is None:
-            muestra = ee.FeatureCollection(muestra.getInfo()['features'])   # se guarda como datos simples
+            muestra = ee.FeatureCollection([ee.Feature(None, f['properties']) for f in muestra.getInfo()['features']])   # se guarda como datos simples (sin geometría)
             _CAMPOS_CACHE[clave_m] = muestra
     clf = ee.Classifier.smileRandomForest(150, seed=7).train(muestra, 'clase', bandas)
     return clf, pila, fc
