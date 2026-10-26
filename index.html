@@ -941,7 +941,7 @@ tr:last-child td { border-bottom: none; }
       <div class="dl-note" style="margin:0 0 8px;">Dos formas de tener el mapa de ambientes en el informe. Podés usar una, otra o las dos.</div>
       <div class="ed-box">
         <div class="ed-h"><b>1 · Borrador automático</b></div>
-        <div class="ed-mut" style="margin-bottom:6px;">Un modelo entrenado con tus mapas propone los ambientes (Loma, Tendidos, Bajos, Cubetas, Montes). Las lomas y el agua son confiables; los ambientes intermedios son un borrador para revisar. Puede tardar 1 o 2 minutos.</div>
+        <div class="ed-mut" style="margin-bottom:6px;">Un modelo entrenado con tus mapas propone las zonas. Salen sin nombre para que se los pongas vos (y podés cambiar los colores). Las lomas y el agua son más confiables; las zonas intermedias son un borrador para revisar. Puede tardar 1 o 2 minutos.</div>
         <button class="btn-sec full" id="btn-ia" onclick="generarAmbIA(this)">Generar borrador automático</button>
         <div id="amb-ia-out"></div>
       </div>
@@ -1889,10 +1889,69 @@ function renderAmbMapas() {
   }
   const ia = d.ambIA;
   outI.innerHTML = (ia && ia.url) ? `
-    <img src="${attr(ia.url)}" alt="" style="width:100%;background:#fff;border-radius:8px;border:1px solid var(--border);margin-top:8px;aspect-ratio:auto;">
-    ${(ia.ambientes || []).map(a => `<div class="amb-row" style="grid-template-columns:36px 1fr auto;"><span style="width:36px;height:20px;border:1px solid #888;background:${attr(a.color)};display:block;"></span>
-      <span>${txt(a.nombre)}</span><span class="ed-mut">${a.ha.toFixed(1)} ha · ${a.pct.toFixed(1)}%</span></div>`).join('')}
-    <button class="btn-sec" style="margin-top:6px;" onclick="delete resultData.ambIA;guardarCampo();renderAmbMapas()">Quitar</button>` : '';
+    <img id="amb-ia-img" src="${attr(ia.url)}" alt="" style="width:100%;background:#fff;border-radius:8px;border:1px solid var(--border);margin-top:8px;aspect-ratio:auto;">
+    <div class="dl-note" style="margin:6px 0;">Ponele nombre y color a cada ambiente (los vas a ver en el mapa y en el informe).</div>
+    ${(ia.ambientes || []).map((a, i) => `<div class="amb-row">
+        <input type="color" value="${attr(a.color)}" onchange="ambIASet(${i},'color',this.value)">
+        <input type="text" placeholder="${attr('Ambiente ' + a.id)}" value="${attr(a.nombre)}" oninput="ambIASet(${i},'nombre',this.value)">
+        <span class="ed-mut">${a.ha.toFixed(1)} ha · ${a.pct.toFixed(1)}%</span></div>`).join('')}
+    <div class="res-btns" style="margin-top:6px;">
+      <button class="btn-sec" onclick="ambIAEstandar()">Nombres estándar</button>
+      <button class="btn-sec" onclick="delete resultData.ambIA;guardarCampo();renderAmbMapas()">Quitar</button></div>` : '';
+}
+const AMB_IA_HEX = ['#267300', '#70A800', '#FFD37F', '#FFFFBE', '#73DFFF', '#730000'];
+const hexRgb = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
+let _recT = null;
+function ambIASet(i, k, v) {
+  const ia = resultData.ambIA; ia.ambientes[i][k] = v; guardarDeb();
+  if (k === 'color') { clearTimeout(_recT); _recT = setTimeout(async () => { ia.url = await colorearAmbIA(ia); const im = document.getElementById('amb-ia-img'); if (im) im.src = ia.url; guardarDeb(); }, 250); }
+}
+function ambIAEstandar() {
+  const ia = resultData.ambIA; if (!ia) return;
+  ia.ambientes.forEach(a => { a.nombre = AMB_STD_NUM[a.id - 1] || a.nombre; a.color = colorAmb(a.nombre, a.id - 1); });
+  colorearAmbIA(ia).then(u => { ia.url = u; guardarCampo(); renderAmbMapas(); });
+}
+/* Pinta el borrador con los colores elegidos y le suaviza los bordes (la clasificación viene en bloques de 10 m) */
+async function colorearAmbIA(ia) {
+  const img = await cargarImg(ia.raw), w = img.width, h = img.height;
+  const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
+  const cx = cv.getContext('2d', { willReadFrequently: true }); cx.drawImage(img, 0, 0);
+  const id = cx.getImageData(0, 0, w, h), px = id.data, pal = AMB_IA_HEX.map(hexRgb);
+  const cls = new Uint8Array(w * h);
+  for (let i = 0; i < w * h; i++) {
+    if (px[i * 4 + 3] < 128) continue;
+    let best = 0, bd = 1e9;
+    for (let k = 0; k < 6; k++) { const d = (px[i*4]-pal[k][0])**2 + (px[i*4+1]-pal[k][1])**2 + (px[i*4+2]-pal[k][2])**2; if (d < bd) { bd = d; best = k; } }
+    cls[i] = best + 1;
+  }
+  const anchoM = ia.bbox ? (ia.bbox[2] - ia.bbox[0]) * 111320 * Math.cos(((ia.bbox[1] + ia.bbox[3]) / 2) * Math.PI / 180) : 0;
+  const pxPorBloque = anchoM ? w / (anchoM / 10) : 3;
+  const r = Math.max(1, Math.min(14, Math.round(pxPorBloque * 0.9)));
+  const blur = m => {                                   // desenfoque por cajas, dos pasadas
+    const tmp = new Float32Array(w * h);
+    for (let pass = 0; pass < 2; pass++) {
+      for (let y = 0; y < h; y++) { let s = 0; const o = y * w;
+        for (let x = -r; x <= r; x++) if (x >= 0 && x < w) s += m[o + x];
+        for (let x = 0; x < w; x++) { tmp[o + x] = s; if (x + r + 1 < w) s += m[o + x + r + 1]; if (x - r >= 0) s -= m[o + x - r]; } }
+      for (let x = 0; x < w; x++) { let s = 0;
+        for (let y = -r; y <= r; y++) if (y >= 0 && y < h) s += tmp[y * w + x];
+        for (let y = 0; y < h; y++) { m[y * w + x] = s; if (y + r + 1 < h) s += tmp[(y + r + 1) * w + x]; if (y - r >= 0) s -= tmp[(y - r) * w + x]; } }
+    }
+  };
+  const mejor = new Float32Array(w * h).fill(-1), eleg = new Uint8Array(w * h);
+  for (let k = 1; k <= 6; k++) {
+    if (!(ia.ambientes || []).some(a => a.id === k)) continue;
+    const m = new Float32Array(w * h); for (let i = 0; i < w * h; i++) if (cls[i] === k) m[i] = 1;
+    blur(m);
+    for (let i = 0; i < w * h; i++) if (m[i] > mejor[i]) { mejor[i] = m[i]; eleg[i] = k; }
+  }
+  const col = {}; (ia.ambientes || []).forEach(a => col[a.id] = hexRgb(a.color));
+  for (let i = 0; i < w * h; i++) {
+    if (!cls[i] || !eleg[i]) { px[i * 4 + 3] = 0; continue; }
+    const c = col[eleg[i]]; px[i*4] = c[0]; px[i*4+1] = c[1]; px[i*4+2] = c[2]; px[i*4+3] = 255;
+  }
+  cx.putImageData(id, 0, 0);
+  return cv.toDataURL('image/png');
 }
 async function generarAmbIA(btn) {
   const d = resultData;
@@ -1903,8 +1962,10 @@ async function generarAmbIA(btn) {
     const r = await fetch(backendBase() + '/ambientes_ia', { method: 'POST', body: fd });
     let j = {}; try { j = await r.json(); } catch {}
     if (!r.ok || j.error) throw new Error(j.error || ('HTTP ' + r.status));
-    j.url = await embedUrl(j.url);
-    if (!j.url.startsWith('data:')) throw new Error('No se pudo descargar la imagen del borrador. Probá de nuevo.');
+    j.raw = await embedUrl(j.url);
+    if (!j.raw.startsWith('data:')) throw new Error('No se pudo descargar la imagen del borrador. Probá de nuevo.');
+    j.ambientes.forEach(a => { a.nombre = ''; });          // sin nombre: lo completa Felipe
+    j.url = await colorearAmbIA(j);
     d.ambIA = j; guardarCampo(); renderAmbMapas();
     showToast('Borrador listo');
   } catch (e) {
@@ -2284,8 +2345,8 @@ ${legBox('Ambientes', ap.clases.map((c, i) => legItem(c.color, `<b>${txt(ambNomb
 <tbody>${ap.clases.map((c, i) => `<tr><td><b>${txt(ambNombre(c, i))}</b></td><td>${c.ha.toFixed(1)}</td><td>${c.pct.toFixed(1)}%</td></tr>`).join('')}</tbody></table>` : '';
   const iaSec = (d.ambIA && d.ambIA.url) ? `<h2>Ambientes — borrador automático</h2>
 <div class="map-row">${imgFn(d.ambIA.url, '', 'Borrador automático de ambientes')}
-${legBox('Ambientes (borrador)', (d.ambIA.ambientes || []).map(a => legItem(a.color, `<b>${txt(a.nombre)}</b> · ${a.ha.toFixed(1)} ha (${a.pct.toFixed(1)}%)`)).join(''),
-  'Borrador generado con un modelo entrenado con mapas de ambientes. Lomas y agua son confiables; los ambientes intermedios requieren revisión.')}</div>` : '';
+${legBox('Ambientes (borrador)', (d.ambIA.ambientes || []).map(a => legItem(a.color, `<b>${txt(a.nombre || 'Ambiente ' + a.id)}</b> · ${a.ha.toFixed(1)} ha (${a.pct.toFixed(1)}%)`)).join(''),
+  'Borrador generado automáticamente a partir de imágenes Sentinel-2; sujeto a revisión en el campo.')}</div>` : '';
 
   const legGe = (tipo) => {
     if (tipo === 'ambientes') return legBox('Ambientes',
