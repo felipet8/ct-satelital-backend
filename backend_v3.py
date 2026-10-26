@@ -991,7 +991,7 @@ def ambientes_ia():
         mx, my = (e - w) * 0.12, (n - s_) * 0.12
         bbox = [w - mx, s_ - my, e + mx, n + my]
         region = ee.Geometry.Rectangle(bbox, 'EPSG:4326', False)
-        url = vis.getThumbURL({'dimensions': 1000, 'region': region.getInfo(), 'format': 'png'})
+        url = None
         areas = ee.Image.pixelArea().divide(1e4).addBands(pred).reduceRegion(
             reducer=ee.Reducer.sum().group(groupField=1, groupName='clase'),
             geometry=geom, scale=20, maxPixels=1e9, tileScale=4).getInfo()
@@ -999,19 +999,24 @@ def ambientes_ia():
         tot = sum(ha.values())
         if not tot:
             return jsonify({'error': 'No se pudo clasificar este campo (sin imágenes Sentinel-2 válidas). Probá de nuevo.'}), 500
-        # Se descarga la imagen acá y se devuelve incrustada (así no depende de permisos del navegador)
-        import urllib.request, base64
-        import time
-        png = b''; ult = None
-        for intento in range(4):          # a veces la miniatura tarda unos segundos en estar lista
+        # Se descarga la imagen acá y se devuelve incrustada (así no depende de permisos del navegador).
+        # Si Earth Engine rechaza el tamaño, se reintenta más chico.
+        import urllib.request, urllib.error, base64
+        png = b''; detalle = ''
+        for dim in (1000, 700, 450):
             try:
-                with urllib.request.urlopen(url, timeout=90) as r:
+                u = vis.getThumbURL({'dimensions': dim, 'region': region.getInfo(), 'format': 'png'})
+                with urllib.request.urlopen(u, timeout=120) as r:
                     png = r.read()
                 break
+            except urllib.error.HTTPError as ex:
+                try: cuerpo = ex.read().decode('utf-8', 'ignore')[:300]
+                except Exception: cuerpo = ''
+                detalle = f'dim {dim}: HTTP {ex.code} {cuerpo}'
             except Exception as ex:
-                ult = ex; time.sleep(3 * (intento + 1))
+                detalle = f'dim {dim}: {ex}'
         if not png:
-            return jsonify({'error': f'No se pudo bajar la imagen del borrador ({ult}). URL: {url[:90]}…'}), 500
+            return jsonify({'error': 'No se pudo bajar la imagen del borrador. ' + detalle}), 500
         if not png.startswith(b'\x89PNG'):
             return jsonify({'error': 'Earth Engine no devolvió una imagen: ' + png[:200].decode('utf-8', 'ignore')}), 500
         url = 'data:image/png;base64,' + base64.b64encode(png).decode()
