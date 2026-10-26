@@ -1001,8 +1001,17 @@ def ambientes_ia():
             return jsonify({'error': 'No se pudo clasificar este campo (sin imágenes Sentinel-2 válidas). Probá de nuevo.'}), 500
         # Se descarga la imagen acá y se devuelve incrustada (así no depende de permisos del navegador)
         import urllib.request, base64
-        with urllib.request.urlopen(url, timeout=90) as r:
-            png = r.read()
+        import time
+        png = b''; ult = None
+        for intento in range(4):          # a veces la miniatura tarda unos segundos en estar lista
+            try:
+                with urllib.request.urlopen(url, timeout=90) as r:
+                    png = r.read()
+                break
+            except Exception as ex:
+                ult = ex; time.sleep(3 * (intento + 1))
+        if not png:
+            return jsonify({'error': f'No se pudo bajar la imagen del borrador ({ult}). URL: {url[:90]}…'}), 500
         if not png.startswith(b'\x89PNG'):
             return jsonify({'error': 'Earth Engine no devolvió una imagen: ' + png[:200].decode('utf-8', 'ignore')}), 500
         url = 'data:image/png;base64,' + base64.b64encode(png).decode()

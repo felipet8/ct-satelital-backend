@@ -1894,7 +1894,10 @@ async function generarAmbIA(btn) {
     if (!j.url.startsWith('data:')) throw new Error('No se pudo descargar la imagen del borrador. Probá de nuevo.');
     d.ambIA = j; guardarCampo(); renderAmbMapas();
     showToast('Borrador listo');
-  } catch (e) { showToast('⚠️ ' + e.message); }
+  } catch (e) {
+    showToast('Error en el borrador: el detalle queda escrito abajo');
+    document.getElementById('amb-ia-out').innerHTML = `<div class="dl-note" style="color:#c0392b;user-select:text;margin-top:8px;"><b>Error:</b> ${txt(e.message)}</div>`;
+  }
   finally { btn.disabled = false; btn.textContent = orig; }
 }
 function generarLaminaAmb(btn) {
