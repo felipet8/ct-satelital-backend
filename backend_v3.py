@@ -978,7 +978,10 @@ def ambientes_ia():
     try:
         version = request.form.get('modelo', 'v2')
         clf, pila, fc = entrenar_ambientes(version=version)
-        pred = pila_para_clasificar(pila, geom, version).classify(clf).focalMode(30, 'circle', 'meters').rename('clase').toInt()
+        # La pila de entrenamiento solo cubre la zona de los campos de entrenamiento: para el campo a clasificar
+        # hay que armar su propia pila (si no, fuera de esa zona la imagen queda vacía).
+        pila_campo = pila_ambientes(geom.bounds(), version='v1' if version == 'v1' else 'v2')
+        pred = pila_para_clasificar(pila_campo, geom, version).classify(clf).focalMode(30, 'circle', 'meters').rename('clase').toInt()
         pred = pred.clip(geom)
         paleta = [AMB_IA[k][1].lstrip('#') for k in sorted(AMB_IA)]
         vis = pred.visualize(min=1, max=6, palette=paleta)
@@ -993,7 +996,9 @@ def ambientes_ia():
             reducer=ee.Reducer.sum().group(groupField=1, groupName='clase'),
             geometry=geom, scale=20, maxPixels=1e9, tileScale=4).getInfo()
         ha = {int(g['clase']): g['sum'] for g in areas.get('groups', [])}
-        tot = sum(ha.values()) or 1
+        tot = sum(ha.values())
+        if not tot:
+            return jsonify({'error': 'No se pudo clasificar este campo (sin imágenes Sentinel-2 válidas). Probá de nuevo.'}), 500
         return jsonify({
             'url': url, 'bbox': bbox,
             'ambientes': [{'id': k, 'nombre': AMB_IA[k][0], 'color': AMB_IA[k][1],

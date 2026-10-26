@@ -1891,6 +1891,7 @@ async function generarAmbIA(btn) {
     let j = {}; try { j = await r.json(); } catch {}
     if (!r.ok || j.error) throw new Error(j.error || ('HTTP ' + r.status));
     j.url = await embedUrl(j.url);
+    if (!j.url.startsWith('data:')) throw new Error('No se pudo descargar la imagen del borrador. Probá de nuevo.');
     d.ambIA = j; guardarCampo(); renderAmbMapas();
     showToast('Borrador listo');
   } catch (e) { showToast('⚠️ ' + e.message); }
