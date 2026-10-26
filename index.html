@@ -1,3 +1,4 @@
+<meta charset="UTF-8">
 <title>CT Satelital</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -982,6 +983,16 @@ tr:last-child td { border-bottom: none; }
         <button class="btn-sec accent full" onclick="generarLamina(this)">🗺️ Generar lámina (PDF)</button>
       </div>
 
+      <!-- Mapa para el celular -->
+      <div class="sec-title">Mapa para el celular (PDF georreferenciado)</div>
+      <div class="dl-note" style="margin:0 0 8px;">Una sola imagen con tus ambientes, que se abre en Avenza Maps (u otra app de mapas offline) y muestra tu posición con el GPS durante la recorrida.</div>
+      <div class="ref-form">
+        <select id="geo-base" class="full"></select>
+        <label class="full" style="font-size:12px;display:flex;gap:6px;align-items:center;"><input type="checkbox" id="geo-amb" checked style="width:auto;"> Dibujar mis ambientes (si los cargaste) con su leyenda</label>
+        <label class="full" style="font-size:12px;display:flex;gap:6px;align-items:center;"><input type="checkbox" id="geo-peri" checked style="width:auto;"> Dibujar perímetro del campo</label>
+        <button class="btn-sec accent full" onclick="generarGeoPDF(this)">📱 Generar PDF georreferenciado</button>
+      </div>
+
       <!-- Google Earth -->
       <div class="sec-title">Imágenes de Google Earth</div>
       <div class="dl-note" style="margin:0 0 8px;">Subí capturas de Google Earth (con el KMZ de perímetro, ambientes o suelos en contorno blanco). Salen en el PDF con su leyenda al lado.</div>
@@ -1779,6 +1790,8 @@ function renderLamBase() {
   const refs = resultData.refImages || [];
   sel.innerHTML = `<option value="auto">Imagen de verano ${resultData.fecha_verano ? '(' + fechaCorta(resultData.fecha_verano) + ')' : ''} — automática</option>` +
     refs.map((r, i) => `<option value="${i}">${fechaCorta(r.fecha)} ${attr(r.caption)}</option>`).join('');
+  const gs = document.getElementById('geo-base');
+  if (gs) gs.innerHTML = sel.innerHTML + '<option value="blanco">Sin imagen (fondo blanco)</option>';
 }
 
 /* ── Mapa de ambientes: borrador automático (1) y ambientes propios (2) ── */
@@ -2043,6 +2056,99 @@ async function generarLamina(btn) {
       ref = d.refImages[+sel];
     }
     imprimirHTML(laminaHTML(d, ref, { unidades }), 'Lámina_' + (d.nombre || 'campo'));
+  } catch (e) { showToast('⚠️ ' + e.message); }
+  finally { btn.disabled = false; btn.textContent = orig; }
+}
+
+/* ─── PDF georreferenciado (para Avenza Maps y similares) ──── */
+function cargarImg(src) {
+  return new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = () => rej(new Error('No se pudo leer la imagen')); i.src = src; });
+}
+function armarGeoPDF(jpeg, wpx, hpx, bbox, pw, ph) {
+  const [w, s, e, n] = bbox, enc = new TextEncoder(), partes = [], offs = [];
+  let pos = 0;
+  const add = b => { if (typeof b === 'string') b = enc.encode(b); partes.push(b); pos += b.length; };
+  const obj = (num, cuerpo) => { offs[num] = pos; add(`${num} 0 obj\n${cuerpo}\nendobj\n`); };
+  const wkt = 'GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563,AUTHORITY["EPSG","7030"]],AUTHORITY["EPSG","6326"]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433],AUTHORITY["EPSG","4326"]]';
+  add('%PDF-1.7\n%\xE2\xE3\xCF\xD3\n');
+  obj(1, '<< /Type /Catalog /Pages 2 0 R >>');
+  obj(2, '<< /Type /Pages /Kids [3 0 R] /Count 1 >>');
+  obj(3, `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pw} ${ph}] /Resources << /XObject << /Im0 4 0 R >> >> /Contents 5 0 R /VP [6 0 R] >>`);
+  offs[4] = pos;
+  add(`4 0 obj\n<< /Type /XObject /Subtype /Image /Width ${wpx} /Height ${hpx} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${jpeg.length} >>\nstream\n`);
+  add(jpeg); add('\nendstream\nendobj\n');
+  const cont = `q ${pw} 0 0 ${ph} 0 0 cm /Im0 Do Q`;
+  obj(5, `<< /Length ${cont.length} >>\nstream\n${cont}\nendstream`);
+  obj(6, `<< /Type /Viewport /Name (Mapa) /BBox [0 0 ${pw} ${ph}] /Measure 7 0 R >>`);
+  obj(7, `<< /Type /Measure /Subtype /GEO /Bounds [0 0 0 1 1 1 1 0] /LPTS [0 0 0 1 1 1 1 0] /GPTS [${s} ${w} ${n} ${w} ${n} ${e} ${s} ${e}] /GCS 8 0 R >>`);
+  obj(8, `<< /Type /GEOGCS /WKT (${wkt}) /EPSG 4326 >>`);
+  const xref = pos;
+  let x = 'xref\n0 9\n0000000000 65535 f \n';
+  for (let i = 1; i <= 8; i++) x += String(offs[i]).padStart(10, '0') + ' 00000 n \n';
+  add(x + `trailer\n<< /Size 9 /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`);
+  const out = new Uint8Array(pos); let o = 0;
+  for (const p of partes) { out.set(p, o); o += p.length; }
+  return out;
+}
+async function generarGeoPDF(btn) {
+  const d = resultData;
+  if (!d || !d.geojson) { showToast('Este campo se analizó antes de esta función — volvé a analizarlo'); return; }
+  const sel = document.getElementById('geo-base').value;
+  const conAmb = document.getElementById('geo-amb').checked && !!d.ambPropios;
+  const conPeri = document.getElementById('geo-peri').checked;
+  const orig = btn.textContent; btn.disabled = true; btn.textContent = 'Preparando PDF…';
+  try {
+    let ref = null;
+    if (sel === 'auto') {
+      if (!d.fecha_verano) throw new Error('No hay fecha de imagen de verano');
+      ref = await pedirImagen(d.fecha_verano, 'falso', 1600);
+    } else if (sel !== 'blanco') ref = d.refImages[+sel];
+    const bbox = ref ? ref.bbox : bboxCampo(d, 0.10);
+    const P = proyector(bbox);
+    const W = 2400, H = Math.round(W * P.H / 1000), k = W / 1000;
+    const cv = document.createElement('canvas'); cv.width = W; cv.height = H;
+    const ctx = cv.getContext('2d');
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, H);
+    if (ref) ctx.drawImage(await cargarImg(await embedUrl(ref.url)), 0, 0, W, H);
+    let svg = '';
+    if (conAmb) d.ambPropios.clases.forEach(c => c.poly.forEach(poly => {
+      svg += `<path d="${pathDe(poly, P)}" fill="${c.color}" fill-opacity="${ref ? 0.5 : 0.9}" fill-rule="evenodd" stroke="#ffffff" stroke-width="1" stroke-linejoin="round"/>`;
+    }));
+    if (conPeri || conAmb) for (const poly of polysDe(d.geojson))
+      svg += `<path d="${pathDe(poly, P)}" fill="none" stroke="#FFD400" stroke-width="${conPeri ? 2.6 : 1.4}" fill-rule="evenodd" stroke-linejoin="round"/>`;
+    const svgImg = await cargarImg('data:image/svg+xml;charset=utf-8,' + encodeURIComponent(
+      `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 1000 ${P.H.toFixed(2)}">${svg}</svg>`));
+    ctx.drawImage(svgImg, 0, 0, W, H);
+    // título y leyenda
+    const f = Math.round(W / 70), pad = f * 0.7;
+    const filas = conAmb ? d.ambPropios.clases.map((c, i) => ({ c: c.color, t: `${ambNombre(c, i)} · ${c.ha.toFixed(1)} ha` })) : [];
+    const lineas = [{ t: d.nombre || 'Campo', b: true }, ...(ref ? [{ t: ref.fecha ? 'Imagen Sentinel-2 ' + fechaCorta(ref.fecha) : '' }] : [])].filter(x => x.t);
+    ctx.font = `bold ${f}px sans-serif`;
+    let ancho = Math.max(...lineas.map(l => ctx.measureText(l.t).width), 0);
+    ctx.font = `${f * 0.85}px sans-serif`;
+    filas.forEach(r => { ancho = Math.max(ancho, ctx.measureText(r.t).width + f * 1.4); });
+    const alto = pad * 2 + lineas.length * f * 1.25 + filas.length * f * 1.1;
+    ctx.fillStyle = 'rgba(255,255,255,0.88)'; ctx.fillRect(pad, pad, ancho + pad * 2, alto);
+    ctx.fillStyle = '#222'; ctx.textBaseline = 'top';
+    let y = pad * 2;
+    lineas.forEach(l => { ctx.font = `${l.b ? 'bold ' : ''}${l.b ? f : f * 0.85}px sans-serif`; ctx.fillText(l.t, pad * 2, y); y += f * 1.25; });
+    ctx.font = `${f * 0.85}px sans-serif`;
+    filas.forEach(r => { ctx.fillStyle = r.c; ctx.fillRect(pad * 2, y, f * 0.9, f * 0.8); ctx.strokeStyle = '#555'; ctx.lineWidth = 1; ctx.strokeRect(pad * 2, y, f * 0.9, f * 0.8);
+      ctx.fillStyle = '#222'; ctx.fillText(r.t, pad * 2 + f * 1.2, y); y += f * 1.1; });
+    // escala
+    const latM = (bbox[1] + bbox[3]) / 2, mPorU = (bbox[2] - bbox[0]) * 111320 * Math.cos(latM * Math.PI / 180) / 1000;
+    const nice = [50, 100, 200, 250, 500, 1000, 2000, 5000]; let m = nice[0];
+    for (const v of nice) if (v / mPorU * k < W * 0.3) m = v;
+    const bw = m / mPorU * k, bx = pad, by = H - pad * 2.2;
+    ctx.fillStyle = 'rgba(255,255,255,0.88)'; ctx.fillRect(bx - pad / 2, by - f * 0.4, bw + pad * 3, f * 1.9);
+    ctx.fillStyle = '#222'; ctx.fillRect(bx, by + f * 0.5, bw, f * 0.2);
+    ctx.font = `${f * 0.8}px sans-serif`; ctx.fillText((m >= 1000 ? m / 1000 + ' km' : m + ' m'), bx, by - f * 0.2);
+    const bin = atob(cv.toDataURL('image/jpeg', 0.9).split(',')[1]);
+    const jpeg = Uint8Array.from(bin, ch => ch.charCodeAt(0));
+    const pw = Math.round(W * 0.36), ph = Math.round(H * 0.36);
+    const pdf = armarGeoPDF(jpeg, W, H, bbox, pw, ph);
+    saveBlob(new Blob([pdf], { type: 'application/pdf' }), 'Mapa_celular_' + String(d.nombre || 'campo').replace(/[^a-zA-Z0-9_-]/g, '_') + '.pdf');
+    showToast('PDF listo: abrilo en Avenza Maps');
   } catch (e) { showToast('⚠️ ' + e.message); }
   finally { btn.disabled = false; btn.textContent = orig; }
 }
