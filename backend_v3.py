@@ -988,7 +988,7 @@ def ambientes_ia():
         # La pila de entrenamiento solo cubre la zona de los campos de entrenamiento: para el campo a clasificar
         # hay que armar su propia pila (si no, fuera de esa zona la imagen queda vacía).
         pila_campo = pila_ambientes(geom.bounds(), version='v1' if version == 'v1' else 'v2')
-        pred = pila_para_clasificar(pila_campo, geom, version).classify(clf).focalMode(30, 'circle', 'meters').rename('clase').toInt()
+        pred = pila_para_clasificar(pila_campo, geom, version).classify(clf).reproject('EPSG:4326', None, 20).focalMode(1, 'circle', 'pixels').rename('clase').toInt()
         pred = pred.clip(geom)
         paleta = [AMB_IA[k][1].lstrip('#') for k in sorted(AMB_IA)]
         vis = pred.visualize(min=1, max=6, palette=paleta)
