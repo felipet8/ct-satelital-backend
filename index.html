@@ -1888,16 +1888,48 @@ function renderAmbMapas() {
       </div>`;
   }
   const ia = d.ambIA;
-  outI.innerHTML = (ia && ia.url) ? `
+  if (ia && ia.url) {
+    const gr = gruposIA(ia), raices = gr.map(g => g.id);
+    outI.innerHTML = `
     <img id="amb-ia-img" src="${attr(ia.url)}" alt="" style="width:100%;background:#fff;border-radius:8px;border:1px solid var(--border);margin-top:8px;aspect-ratio:auto;">
-    <div class="dl-note" style="margin:6px 0;">Ponele nombre y color a cada ambiente (los vas a ver en el mapa y en el informe).</div>
-    ${(ia.ambientes || []).map((a, i) => `<div class="amb-row">
+    <div class="dl-note" style="margin:6px 0;">El modelo separa hasta 6 zonas. Ponele nombre y color a cada una, y si querés menos ambientes, uní zonas con "Unir con…" (después las podés volver a separar).</div>
+    ${ia.ambientes.map((a, i) => {
+      const raiz = (a.grupo || a.id) === a.id;
+      if (!raiz) { const g = ia.ambientes.find(x => x.id === a.grupo);
+        return `<div class="amb-row" style="grid-template-columns:36px 1fr auto;"><span style="width:36px;height:20px;border:1px solid #888;background:${attr(g.color)};display:block;opacity:.55;"></span>
+          <span class="ed-mut">Zona ${a.id} (${a.ha.toFixed(1)} ha) unida a <b>${txt(g.nombre || 'Ambiente ' + g.id)}</b></span>
+          <button class="btn-sec" onclick="ambIAUnir(${i},0)">Separar</button></div>`; }
+      const g = gr.find(x => x.id === a.id);
+      return `<div class="amb-row">
         <input type="color" value="${attr(a.color)}" onchange="ambIASet(${i},'color',this.value)">
         <input type="text" placeholder="${attr('Ambiente ' + a.id)}" value="${attr(a.nombre)}" oninput="ambIASet(${i},'nombre',this.value)">
-        <span class="ed-mut">${a.ha.toFixed(1)} ha · ${a.pct.toFixed(1)}%</span></div>`).join('')}
+        <span class="ed-mut">${g.ha.toFixed(1)} ha · ${g.pct.toFixed(1)}%${g.n > 1 ? ' (' + g.n + ' zonas)' : ''}</span></div>
+        ${raices.length > 1 ? `<div style="margin:-2px 0 4px 44px;"><select onchange="ambIAUnir(${i},+this.value)" style="width:auto;font-size:11px;"><option value="0">Unir con…</option>
+          ${gr.filter(x => x.id !== a.id).map(x => `<option value="${x.id}">${txt(x.nombre || 'Ambiente ' + x.id)}</option>`).join('')}</select></div>` : ''}`;
+    }).join('')}
     <div class="res-btns" style="margin-top:6px;">
       <button class="btn-sec" onclick="ambIAEstandar()">Nombres estándar</button>
-      <button class="btn-sec" onclick="delete resultData.ambIA;guardarCampo();renderAmbMapas()">Quitar</button></div>` : '';
+      <button class="btn-sec" onclick="delete resultData.ambIA;guardarCampo();renderAmbMapas()">Quitar</button></div>`;
+  } else outI.innerHTML = '';
+}
+/* Grupos efectivos: cada zona puede estar unida a otra (a.grupo = id de la zona principal) */
+function gruposIA(ia) {
+  const raiz = a => (a.grupo && a.grupo !== a.id) ? a.grupo : a.id;
+  return ia.ambientes.filter(a => raiz(a) === a.id).map(a => {
+    const miembros = ia.ambientes.filter(x => raiz(x) === a.id);
+    const ha = miembros.reduce((s, x) => s + x.ha, 0), pct = miembros.reduce((s, x) => s + x.pct, 0);
+    return { id: a.id, nombre: a.nombre, color: a.color, ha, pct, n: miembros.length, ids: miembros.map(x => x.id) };
+  });
+}
+async function ambIAUnir(i, destino) {
+  const ia = resultData.ambIA, a = ia.ambientes[i];
+  if (destino) {
+    const dd = ia.ambientes.find(x => x.id === destino); destino = (dd && dd.grupo) || destino;   // siempre a la zona principal
+    if (destino === a.id) return;
+    ia.ambientes.forEach(x => { if (x.grupo === a.id && x.id !== a.id) x.grupo = destino; });   // los que estaban unidos a esta pasan al destino
+    a.grupo = destino;
+  } else a.grupo = a.id;
+  ia.url = await colorearAmbIA(ia); guardarCampo(); renderAmbMapas();
 }
 const AMB_IA_HEX = ['#267300', '#70A800', '#FFD37F', '#FFFFBE', '#73DFFF', '#730000'];
 const hexRgb = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
@@ -1941,7 +1973,10 @@ async function colorearAmbIA(ia) {
   const mejor = new Float32Array(w * h).fill(-1), eleg = new Uint8Array(w * h);
   for (let k = 1; k <= 6; k++) {
     if (!(ia.ambientes || []).some(a => a.id === k)) continue;
-    const m = new Float32Array(w * h); for (let i = 0; i < w * h; i++) if (cls[i] === k) m[i] = 1;
+    const gk = ((ia.ambientes.find(a => a.id === k) || {}).grupo) || k;
+    if (gk !== k) continue;                                  // las zonas unidas se procesan junto a su zona principal
+    const ids = ia.ambientes.filter(a => (a.grupo || a.id) === k).map(a => a.id);
+    const m = new Float32Array(w * h); for (let i = 0; i < w * h; i++) if (ids.includes(cls[i])) m[i] = 1;
     blur(m);
     for (let i = 0; i < w * h; i++) if (m[i] > mejor[i]) { mejor[i] = m[i]; eleg[i] = k; }
   }
@@ -2345,7 +2380,7 @@ ${legBox('Ambientes', ap.clases.map((c, i) => legItem(c.color, `<b>${txt(ambNomb
 <tbody>${ap.clases.map((c, i) => `<tr><td><b>${txt(ambNombre(c, i))}</b></td><td>${c.ha.toFixed(1)}</td><td>${c.pct.toFixed(1)}%</td></tr>`).join('')}</tbody></table>` : '';
   const iaSec = (d.ambIA && d.ambIA.url) ? `<h2>Ambientes — borrador automático</h2>
 <div class="map-row">${imgFn(d.ambIA.url, '', 'Borrador automático de ambientes')}
-${legBox('Ambientes (borrador)', (d.ambIA.ambientes || []).map(a => legItem(a.color, `<b>${txt(a.nombre || 'Ambiente ' + a.id)}</b> · ${a.ha.toFixed(1)} ha (${a.pct.toFixed(1)}%)`)).join(''),
+${legBox('Ambientes (borrador)', gruposIA(d.ambIA).map(a => legItem(a.color, `<b>${txt(a.nombre || 'Ambiente ' + a.id)}</b> · ${a.ha.toFixed(1)} ha (${a.pct.toFixed(1)}%)`)).join(''),
   'Borrador generado automáticamente a partir de imágenes Sentinel-2; sujeto a revisión en el campo.')}</div>` : '';
 
   const legGe = (tipo) => {
