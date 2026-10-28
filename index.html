@@ -2089,8 +2089,19 @@ async function generarAmbIA(btn) {
   try {
     const fd = new FormData(); fd.append('geojson', JSON.stringify(d.geojson)); fd.append('modelo', 'v3');
     const r = await fetch(backendBase() + '/ambientes_ia', { method: 'POST', body: fd });
-    let j = {}; try { j = await r.json(); } catch {}
-    if (!r.ok || j.error) throw new Error(j.error || ('HTTP ' + r.status));
+    let j0 = {}; try { j0 = await r.json(); } catch {}
+    if (!r.ok || j0.error || !j0.job) throw new Error(j0.error || ('HTTP ' + r.status));
+    let j = null;
+    for (let intento = 0; intento < 240; intento++) {            // hasta ~20 minutos
+      await new Promise(res => setTimeout(res, 5000));
+      let s = {};
+      try { const rs = await fetch(backendBase() + '/ambientes_ia_estado?job=' + j0.job); s = await rs.json(); }
+      catch { continue; }                                         // un corte momentáneo de red: sigue esperando
+      if (s.estado === 'corriendo') { btn.textContent = `Clasificando… ${Math.floor((s.segundos || 0) / 60)} min ${(s.segundos || 0) % 60} s`; continue; }
+      if (s.estado === 'error') throw new Error(s.error || 'Error en el servidor');
+      if (s.estado === 'listo') { j = s.resultado; break; }
+    }
+    if (!j) throw new Error('El cálculo tardó demasiado. Probá de nuevo en unos minutos.');
     j.raw = await embedUrl(j.url);
     if (!j.raw.startsWith('data:')) throw new Error('No se pudo descargar la imagen del borrador. Probá de nuevo.');
     j.ambientes.forEach(a => { a.nombre = ''; });          // sin nombre: lo completa Felipe

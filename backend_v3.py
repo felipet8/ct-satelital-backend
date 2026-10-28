@@ -974,16 +974,14 @@ def validar_ia():
         return jsonify({'error': str(e)}), 500
 
 
-@app.route('/ambientes_ia', methods=['POST'])
-def ambientes_ia():
+def _ambientes_ia_calcular(geojson_str, version):
     """Clasifica un campo con el modelo entrenado con TODOS los mapas de Felipe.
     Recibe geojson (igual que /imagen). Devuelve imagen, hectáreas por ambiente y colores."""
     try:
-        geom = geojson_a_geometry(request.form['geojson'])
+        geom = geojson_a_geometry(geojson_str)
     except Exception as e:
-        return jsonify({'error': f'Parámetros inválidos: {e}'}), 400
+        return {'error': f'Parámetros inválidos: {e}'}, 400
     try:
-        version = request.form.get('modelo', 'v2')
         clf, pila, fc = entrenar_ambientes(version=version)
         # La pila de entrenamiento solo cubre la zona de los campos de entrenamiento: para el campo a clasificar
         # hay que armar su propia pila (si no, fuera de esa zona la imagen queda vacía).
@@ -1005,7 +1003,7 @@ def ambientes_ia():
         ha = {int(g['clase']): g['sum'] for g in areas.get('groups', [])}
         tot = sum(ha.values())
         if not tot:
-            return jsonify({'error': 'No se pudo clasificar este campo (sin imágenes Sentinel-2 válidas). Probá de nuevo.'}), 500
+            return {'error': 'No se pudo clasificar este campo (sin imágenes Sentinel-2 válidas). Probá de nuevo.'}, 500
         # Se descarga la imagen acá y se devuelve incrustada (así no depende de permisos del navegador).
         # Si Earth Engine rechaza el tamaño, se reintenta más chico.
         import urllib.request, urllib.error, base64
@@ -1023,18 +1021,76 @@ def ambientes_ia():
             except Exception as ex:
                 detalle = f'dim {dim}: {ex}'
         if not png:
-            return jsonify({'error': 'No se pudo bajar la imagen del borrador. ' + detalle}), 500
+            return {'error': 'No se pudo bajar la imagen del borrador. ' + detalle}, 500
         if not png.startswith(b'\x89PNG'):
-            return jsonify({'error': 'Earth Engine no devolvió una imagen: ' + png[:200].decode('utf-8', 'ignore')}), 500
+            return {'error': 'Earth Engine no devolvió una imagen: ' + png[:200].decode('utf-8', 'ignore')}, 500
         url = 'data:image/png;base64,' + base64.b64encode(png).decode()
-        return jsonify({
+        return {
             'url': url, 'bbox': bbox,
             'ambientes': [{'id': k, 'nombre': AMB_IA[k][0], 'color': AMB_IA[k][1],
                            'ha': round(ha.get(k, 0), 1), 'pct': round(ha.get(k, 0) / tot * 100, 1)}
                           for k in sorted(AMB_IA) if ha.get(k, 0) > 0],
-        })
+        }, 200
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return {'error': str(e)}, 500
+
+
+# El cálculo tarda minutos: se corre en segundo plano y la app pregunta cada tanto si ya terminó
+# (así no se corta por tiempo de espera del servidor). Requiere 1 solo worker con varios hilos (ver Procfile).
+import threading, uuid
+_JOBS = {}
+
+def _limpiar_jobs():
+    ahora = time.time()
+    for k in [k for k, v in _JOBS.items() if ahora - v['t'] > 3600]:
+        _JOBS.pop(k, None)
+
+def _correr_job(job_id, geojson_str, version):
+    try:
+        res, code = _ambientes_ia_calcular(geojson_str, version)
+        _JOBS[job_id].update(estado='listo' if code == 200 else 'error', resultado=res if code == 200 else None,
+                             error=None if code == 200 else res.get('error', 'Error'))
+    except Exception as e:
+        _JOBS[job_id].update(estado='error', error=str(e))
+
+
+@app.route('/ambientes_ia', methods=['POST'])
+def ambientes_ia():
+    """Clasifica un campo con el modelo entrenado con los mapas de Felipe. Devuelve un número de trabajo;
+    el resultado se pide con /ambientes_ia_estado?job=..."""
+    try:
+        geojson_a_geometry(request.form['geojson'])
+    except Exception as e:
+        return jsonify({'error': f'Parámetros inválidos: {e}'}), 400
+    _limpiar_jobs()
+    job_id = uuid.uuid4().hex
+    _JOBS[job_id] = {'estado': 'corriendo', 't': time.time()}
+    threading.Thread(target=_correr_job, args=(job_id, request.form['geojson'], request.form.get('modelo', 'v3')), daemon=True).start()
+    return jsonify({'job': job_id})
+
+
+@app.route('/ambientes_ia_estado', methods=['GET'])
+def ambientes_ia_estado():
+    j = _JOBS.get(request.args.get('job', ''))
+    if not j:
+        return jsonify({'estado': 'error', 'error': 'El servidor se reinició mientras calculaba. Volvé a generar el borrador.'})
+    if j['estado'] == 'listo':
+        return jsonify({'estado': 'listo', 'resultado': j['resultado']})
+    if j['estado'] == 'error':
+        return jsonify({'estado': 'error', 'error': j['error']})
+    return jsonify({'estado': 'corriendo', 'segundos': int(time.time() - j['t'])})
+
+
+def _precalentar_modelo():
+    """Al arrancar, deja lista la muestra de entrenamiento para que el primer borrador no tarde de más."""
+    try:
+        entrenar_ambientes(version='v3')
+        print('✓ modelo de ambientes precalentado')
+    except Exception as e:
+        print('precalentar modelo:', e)
+
+if os.environ.get('GEE_CREDENTIALS_JSON'):
+    threading.Thread(target=_precalentar_modelo, daemon=True).start()
 
 
 # ─── Ambientes propios: lectura de SHP (.zip) / KMZ / KML dibujados por Felipe ─
